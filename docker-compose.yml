@@ -1,4 +1,5 @@
-version: '3.8'
+# Twillow SMS Gateway Docker Compose configuration
+# Uses uv for faster dependency installation in Python services
 
 services:
   # Redis for queueing and rate limiting
@@ -24,7 +25,7 @@ services:
       - "8000:8000"
     environment:
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=sqlite:///./data/sms_gateway.db
+      - DATABASE_URL=sqlite:///./data/sms_gateway.db  # Updated path to use data directory
       - PROVIDER1_URL=http://provider1:8071/api/sms/provider1
       - PROVIDER2_URL=http://provider2:8072/api/sms/provider2
       - PROVIDER3_URL=http://provider3:8073/api/sms/provider3
@@ -50,6 +51,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.nodejs
+    command: npm start
+    user: root
     ports:
       - "8071:8071"
     environment:
@@ -57,7 +60,7 @@ services:
       - PORT_SMS_1=8071
       - PORT_EMAIL_1=8091
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8071/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8071/health"\]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -69,6 +72,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.nodejs
+    command: npm start
+    user: root
     ports:
       - "8072:8072"
     environment:
@@ -76,7 +81,7 @@ services:
       - PORT_SMS_2=8072
       - PORT_EMAIL_2=8092
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8072/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8072/health"\]
       interval: 10s
       timeout: 3s
       retries: 3
@@ -88,6 +93,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.nodejs
+    command: npm start
+    user: root
     ports:
       - "8073:8073"
     environment:
@@ -95,12 +102,59 @@ services:
       - PORT_SMS_3=8073
       - PORT_EMAIL_3=8093
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8073/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8073/health"\]
       interval: 10s
       timeout: 3s
       retries: 3
     networks:
       - twillow-network
+
+  # TaskIQ worker service (can have multiple instances)
+  worker:
+    build: .
+    command: taskiq worker src.taskiq_scheduler:broker --log-level INFO
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=sqlite:///./data/sms_gateway.db
+      - TASKIQ_BROKER_URL=redis://redis:6379
+      - PROVIDER1_URL=http://provider1:8071/api/sms/provider1
+      - PROVIDER2_URL=http://provider2:8072/api/sms/provider2
+      - PROVIDER3_URL=http://provider3:8073/api/sms/provider3
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - sqlite_data:/app/data
+    networks:
+      - twillow-network
+    deploy:
+      mode: replicated
+      replicas: 2  # Run 2 worker instances for better throughput
+      restart_policy:
+        condition: on-failure
+
+  # TaskIQ scheduler service (only one instance should run)
+  scheduler:
+    build: .
+    command: taskiq scheduler src.taskiq_scheduler:scheduler --log-level INFO
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=sqlite:///./data/sms_gateway.db
+      - TASKIQ_BROKER_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - sqlite_data:/app/data
+    networks:
+      - twillow-network
+    deploy:
+      mode: replicated
+      replicas: 1  # Ensure only one scheduler instance
+      restart_policy:
+        condition: on-failure
 
 volumes:
   redis_data:

@@ -12,20 +12,47 @@ docker-compose up --build
 
 App will be available at http://localhost:8000 and OpenAPI at http://localhost:8000/docs
 
-## Local development (venv)
+## Local development (uv)
+
+Install dependencies using uv:
 
 ```bash
-python -m venv .venv
+# Install and sync dependencies
+uv sync
+
+# Activate the virtual environment
 source .venv/bin/activate
-pip install -U pip
-pip install -r requirements.txt
+
+# Run the application
 uvicorn "src.main:app" --reload --host 0.0.0.0 --port 8000
 ```
 
-## Run TaskIQ worker
+## Run TaskIQ worker with uv
 
 ```bash
+# Make sure virtual environment is activated
+source .venv/bin/activate
+
+# Run the worker
 python -m src.worker
+```
+
+## Development with uv
+
+This project supports development using uv for faster dependency management:
+
+```bash
+# Install dependencies
+uv sync
+
+# Run tests
+uv run pytest
+
+# Run the application in development mode
+uv run uvicorn "src.main:app" --reload --host 0.0.0.0 --port 8000
+
+# Run the worker
+uv run python -m src.worker
 ```
 
 ## Environment variables

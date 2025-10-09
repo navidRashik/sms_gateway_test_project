@@ -5,21 +5,26 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files
-COPY requirements.txt pyproject.toml ./
+# Install uv
+RUN pip install --upgrade pip && pip install uv
+
+# Copy project files
+COPY pyproject.toml ./
+COPY uv.lock ./
 COPY README.md ./
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install --no-cache-dir -e .
+# Install Python dependencies using uv
+RUN uv sync --no-dev --frozen
 
 # Copy application code
 COPY src/ ./src/
 
-# Create non-root user
+# Create non-root user and data directory
 RUN useradd --create-home --shell /bin/bash app \
+    && mkdir -p /app/data \
     && chown -R app:app /app
 USER app
 
@@ -31,4 +36,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Start the application
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["/app/.venv/bin/uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]

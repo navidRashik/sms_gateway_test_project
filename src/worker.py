@@ -14,7 +14,7 @@ from typing import Optional
 from taskiq.cli.worker import run_worker
 
 from .config import settings
-from .tasks import broker
+from .taskiq_scheduler import broker
 
 # Configure logging
 logging.basicConfig(

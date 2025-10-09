@@ -12,12 +12,12 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple, Set
 
 import httpx
-from taskiq_redis import redis_broker
 from redis.asyncio import Redis
 from sqlmodel import Session, create_engine
 
 from .config import settings
 from .taskiq_config import TaskIQConfig, calculate_retry_delay
+from .taskiq_scheduler import broker
 from .retry_service import RetryService
 from .database import get_sms_request_repository, get_sms_response_repository, get_sms_retry_repository, get_provider_health_repository
 
@@ -25,14 +25,9 @@ from .database import get_sms_request_repository, get_sms_response_repository, g
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create Redis-backed broker for production use with proper TaskIQ configuration
-broker = redis_broker.ListQueueBroker(
-    url=settings.taskiq_broker_url,
-    queue_name="sms_queue",
-    max_connection_pool_size=20,  # Connection pooling for high throughput
-)
-
-# Schedule source removed - using direct task scheduling instead
+# The broker is now imported at the top of the file from taskiq_scheduler.py
+# This ensures consistent broker usage across the application
+# No need to define the broker here as it's imported from taskiq_scheduler
 
 
 # Global instances for database and Redis connections
@@ -159,35 +154,64 @@ async def send_sms_to_provider(
                 logger.warning(f"SMS failed for {provider_id}: {message_id} - {error_msg}")
 
                 if retry_count < max_retries:
-                    # Schedule retry with exponential backoff using direct task call
+                    # Schedule retry with exponential backoff using TaskIQ's scheduling
                     delay = calculate_retry_delay(retry_count)
                     logger.info(f"Scheduling retry {retry_count + 1} for {message_id} in {delay}s")
 
-                    # Schedule the retry task for future execution using asyncio
-                    asyncio.create_task(
-                        asyncio.sleep(delay)
-                    ).add_done_callback(
-                        lambda _: send_sms_to_provider.kicker(
+                    # Use proper TaskIQ scheduling with delay
+                    from datetime import datetime, timedelta
+                    from .taskiq_scheduler import redis_source
+
+                    scheduled_time = datetime.utcnow() + timedelta(seconds=delay)
+
+                    # Schedule the retry task with the calculated delay
+                    try:
+                        send_sms_to_provider.kiq(
                             provider_url=provider_url,
                             phone=phone,
                             text=text,
                             message_id=message_id,
                             provider_id=provider_id,
                             retry_count=retry_count + 1,
-                            health_tracker=health_tracker
+                            health_tracker=health_tracker,
+                            request_id=request_id,
+                        ).schedule_by_time(redis_source, scheduled_time)
+
+                        # Return failure result immediately - the retry will be handled by TaskIQ scheduler
+                        return {
+                            "success": False,
+                            "message_id": message_id,
+                            "provider": provider_id,
+                            "error": f"HTTP {response.status_code}: Retry scheduled",
+                            "retry_count": retry_count,
+                            "retry_scheduled": True,
+                            "retry_in_seconds": delay,
+                        }
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to schedule retry for {message_id}: {str(e)}"
                         )
-                    )
-                    
-                    # Return failure result immediately - the retry will be handled by scheduler
-                    return {
-                        "success": False,
-                        "message_id": message_id,
-                        "provider": provider_id,
-                        "error": f"HTTP {response.status_code}: Retry scheduled",
-                        "retry_count": retry_count,
-                        "retry_scheduled": True,
-                        "retry_in_seconds": delay
-                    }
+                        # Fallback to immediate queuing if scheduling fails
+                        send_sms_to_provider.kiq(
+                            provider_url=provider_url,
+                            phone=phone,
+                            text=text,
+                            message_id=message_id,
+                            provider_id=provider_id,
+                            retry_count=retry_count + 1,
+                            health_tracker=health_tracker,
+                            request_id=request_id,
+                        )
+
+                        return {
+                            "success": False,
+                            "message_id": message_id,
+                            "provider": provider_id,
+                            "error": f"HTTP {response.status_code}: Retry queued (scheduling failed)",
+                            "retry_count": retry_count,
+                            "retry_scheduled": True,
+                            "retry_in_seconds": delay,
+                        }
 
                 # Record failed send in health tracker if available
                 if health_tracker is not None:
@@ -224,35 +248,64 @@ async def send_sms_to_provider(
         logger.error(f"Timeout sending SMS to {provider_id}: {message_id} - {str(e)}")
 
         if retry_count < max_retries:
-            # Schedule retry with exponential backoff using direct task call
+            # Schedule retry with exponential backoff using TaskIQ's scheduling
             delay = calculate_retry_delay(retry_count)
             logger.info(f"Scheduling timeout retry {retry_count + 1} for {message_id} in {delay}s")
 
-            # Schedule the retry task for future execution using asyncio
-            asyncio.create_task(
-                asyncio.sleep(delay)
-            ).add_done_callback(
-                lambda _: send_sms_to_provider.kicker(
+            # Use proper TaskIQ scheduling with delay
+            from datetime import datetime, timedelta
+            from .taskiq_scheduler import redis_source
+
+            scheduled_time = datetime.utcnow() + timedelta(seconds=delay)
+
+            # Schedule the retry task with the calculated delay
+            try:
+                send_sms_to_provider.kiq(
                     provider_url=provider_url,
                     phone=phone,
                     text=text,
                     message_id=message_id,
                     provider_id=provider_id,
                     retry_count=retry_count + 1,
-                    health_tracker=health_tracker
+                    health_tracker=health_tracker,
+                    request_id=request_id,
+                ).schedule_by_time(redis_source, scheduled_time)
+
+                # Return failure result immediately - the retry will be handled by TaskIQ scheduler
+                return {
+                    "success": False,
+                    "message_id": message_id,
+                    "provider": provider_id,
+                    "error": "Timeout: Retry scheduled",
+                    "retry_count": retry_count,
+                    "retry_scheduled": True,
+                    "retry_in_seconds": delay,
+                }
+            except Exception as e:
+                logger.error(
+                    f"Failed to schedule timeout retry for {message_id}: {str(e)}"
                 )
-            )
-            
-            # Return failure result immediately - the retry will be handled by scheduler
-            return {
-                "success": False,
-                "message_id": message_id,
-                "provider": provider_id,
-                "error": "Timeout: Retry scheduled",
-                "retry_count": retry_count,
-                "retry_scheduled": True,
-                "retry_in_seconds": delay
-            }
+                # Fallback to immediate queuing if scheduling fails
+                send_sms_to_provider.kiq(
+                    provider_url=provider_url,
+                    phone=phone,
+                    text=text,
+                    message_id=message_id,
+                    provider_id=provider_id,
+                    retry_count=retry_count + 1,
+                    health_tracker=health_tracker,
+                    request_id=request_id,
+                )
+
+                return {
+                    "success": False,
+                    "message_id": message_id,
+                    "provider": provider_id,
+                    "error": "Timeout: Retry queued (scheduling failed)",
+                    "retry_count": retry_count,
+                    "retry_scheduled": True,
+                    "retry_in_seconds": delay,
+                }
 
         # Record failed send in health tracker if available
         if health_tracker is not None:
@@ -289,35 +342,64 @@ async def send_sms_to_provider(
         logger.error(f"Unexpected error sending SMS to {provider_id}: {message_id} - {str(e)}")
 
         if retry_count < max_retries:
-            # Schedule retry with exponential backoff using direct task call
+            # Schedule retry with exponential backoff using TaskIQ's scheduling
             delay = calculate_retry_delay(retry_count)
             logger.info(f"Scheduling error retry {retry_count + 1} for {message_id} in {delay}s")
 
-            # Schedule the retry task for future execution using asyncio
-            asyncio.create_task(
-                asyncio.sleep(delay)
-            ).add_done_callback(
-                lambda _: send_sms_to_provider.kicker(
+            # Use proper TaskIQ scheduling with delay
+            from datetime import datetime, timedelta
+            from .taskiq_scheduler import redis_source
+
+            scheduled_time = datetime.utcnow() + timedelta(seconds=delay)
+
+            # Schedule the retry task with the calculated delay
+            try:
+                send_sms_to_provider.kiq(
                     provider_url=provider_url,
                     phone=phone,
                     text=text,
                     message_id=message_id,
                     provider_id=provider_id,
                     retry_count=retry_count + 1,
-                    health_tracker=health_tracker
+                    health_tracker=health_tracker,
+                    request_id=request_id,
+                ).schedule_by_time(redis_source, scheduled_time)
+
+                # Return failure result immediately - the retry will be handled by TaskIQ scheduler
+                return {
+                    "success": False,
+                    "message_id": message_id,
+                    "provider": provider_id,
+                    "error": "Unexpected error: Retry scheduled",
+                    "retry_count": retry_count,
+                    "retry_scheduled": True,
+                    "retry_in_seconds": delay,
+                }
+            except Exception as e:
+                logger.error(
+                    f"Failed to schedule error retry for {message_id}: {str(e)}"
                 )
-            )
-            
-            # Return failure result immediately - the retry will be handled by scheduler
-            return {
-                "success": False,
-                "message_id": message_id,
-                "provider": provider_id,
-                "error": "Unexpected error: Retry scheduled",
-                "retry_count": retry_count,
-                "retry_scheduled": True,
-                "retry_in_seconds": delay
-            }
+                # Fallback to immediate queuing if scheduling fails
+                send_sms_to_provider.kiq(
+                    provider_url=provider_url,
+                    phone=phone,
+                    text=text,
+                    message_id=message_id,
+                    provider_id=provider_id,
+                    retry_count=retry_count + 1,
+                    health_tracker=health_tracker,
+                    request_id=request_id,
+                )
+
+                return {
+                    "success": False,
+                    "message_id": message_id,
+                    "provider": provider_id,
+                    "error": "Unexpected error: Retry queued (scheduling failed)",
+                    "retry_count": retry_count,
+                    "retry_scheduled": True,
+                    "retry_in_seconds": delay,
+                }
 
         # Record failed send in health tracker if available
         if health_tracker is not None:

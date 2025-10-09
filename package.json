@@ -1,5 +1,8 @@
 {
   "type": "module",
+  "scripts": {
+    "start": "tsx sms_gateway_provider.ts"
+  },
   "dependencies": {
     "dotenv": "^17.2.3",
     "express": "^5.1.0",

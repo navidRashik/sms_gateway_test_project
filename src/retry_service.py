@@ -357,6 +357,7 @@ class RetryService:
     ) -> Dict[str, any]:
         """
         Execute a retry attempt with the specified delay and provider.
+        This method schedules the retry without blocking the worker.
 
         Args:
             request_id: SMS request ID
@@ -372,10 +373,6 @@ class RetryService:
             Retry result dictionary
         """
         try:
-            # Wait for the calculated delay
-            logger.info(f"Waiting {delay_seconds:.1f}s before retry attempt {current_attempt}")
-            await asyncio.sleep(delay_seconds)
-
             # Record retry attempt in database
             await self.record_retry_attempt(
                 request_id=request_id,
@@ -387,23 +384,48 @@ class RetryService:
 
             # Import here to avoid circular imports
             from .tasks import send_sms_to_provider
+            from datetime import datetime, timedelta
+            from .taskiq_scheduler import redis_source
 
-            # Execute the retry
-            result = await send_sms_to_provider.kicker(
-                provider_url=provider_url,
-                phone=phone,
-                text=text,
-                message_id=f"retry_{request_id}_{current_attempt}",
-                provider_id=provider_id,
-                retry_count=current_attempt - 1
-            )
+            # Schedule the retry using TaskIQ with proper delay scheduling
+            scheduled_time = datetime.utcnow() + timedelta(seconds=delay_seconds)
+            
+            # Schedule the retry task with the calculated delay
+            try:
+                send_sms_to_provider.kiq(
+                    provider_url=provider_url,
+                    phone=phone,
+                    text=text,
+                    message_id=f"retry_{request_id}_{current_attempt}",
+                    provider_id=provider_id,
+                    retry_count=current_attempt - 1  # This represents the retry count for the scheduled task
+                ).schedule_by_time(
+                    redis_source,
+                    scheduled_time
+                )
+            except Exception as e:
+                logger.error(f"Failed to schedule retry for request {request_id}: {str(e)}")
+                # Fallback to immediate queuing if scheduling fails
+                send_sms_to_provider.kiq(
+                    provider_url=provider_url,
+                    phone=phone,
+                    text=text,
+                    message_id=f"retry_{request_id}_{current_attempt}",
+                    provider_id=provider_id,
+                    retry_count=current_attempt - 1  # This represents the retry count for the scheduled task
+                )
 
-            return result
+            return {
+                "success": False,  # This is just scheduling, not actual result
+                "message": f"Retry scheduled for attempt {current_attempt}",
+                "retry_count": current_attempt,
+                "provider": provider_id
+            }
 
         except Exception as e:
-            logger.error(f"Error executing retry for request {request_id}: {str(e)}")
+            logger.error(f"Error scheduling retry for request {request_id}: {str(e)}")
             return {
                 "success": False,
-                "error": f"Retry execution error: {str(e)}",
+                "error": f"Retry scheduling error: {str(e)}",
                 "retry_count": current_attempt
             }

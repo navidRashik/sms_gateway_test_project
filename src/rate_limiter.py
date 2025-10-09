@@ -96,8 +96,12 @@ class RateLimiter:
             Current request count for this window
         """
         key = self._get_key(provider_id)
-        count = await self.redis.get(key)
-        return int(count) if count else 0
+        try:
+            count = await self.redis.get(key)
+            return int(count) if count else 0
+        except (RedisError, ConnectionError, TimeoutError) as e:
+            logger.error(f"Error getting current count for {provider_id}: {str(e)}")
+            return 0
 
     async def reset_provider_limit(self, provider_id: str) -> bool:
         """
@@ -110,7 +114,10 @@ class RateLimiter:
             True if reset successful
         """
         key = self._get_key(provider_id)
-        await self.redis.delete(key)
+        try:
+            await self.redis.delete(key)
+        except (RedisError, ConnectionError, TimeoutError) as e:
+            logger.error(f"Error resetting provider limit for {provider_id}: {str(e)}")
         return True
 
     async def get_rate_limit_stats(self, provider_id: str) -> dict:
