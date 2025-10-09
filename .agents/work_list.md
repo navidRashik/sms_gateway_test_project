@@ -12,9 +12,28 @@
 | T-015 | bug | Fix blocking asyncio.sleep in retry logic | github-copilot | ready | P0       | 2025-10-09T12:59:00Z | 2025-10-09T12:59:00Z |
 | T-016 | feature | Implement TaskIQ scheduling for retry delays | github-copilot | ready | P0       | 2025-10-09T12:59:00Z | 2025-10-09T12:59:00Z |
 | T-017 | bug | Fix Redis rate limiter timestamped key architecture | github-copilot | done | P0       | 2025-10-09T13:15:00Z | 2025-10-09T13:15:00Z |
+| T-018 | refactor | Move provider selection to execution time | github-copilot | done | P0 | 2025-10-10T00:00:00Z | 2025-10-10T00:00:00Z |
 | T-008 | feature | Implement weighted round-robin distribution logic | code | ready | P1       | 2025-10-09T12:40:28Z | 2025-10-09T12:40:28Z |
 | T-009 | feature | Create FastAPI endpoints and middleware | code | ready | P0       | 2025-10-09T12:40:28Z | 2025-10-09T12:40:28Z |
 | T-010 | feature | Implement request/response data persistence | code | ready | P1       | 2025-10-09T12:40:28Z | 2025-10-09T12:40:28Z |
+
+## T-018 | refactor | Move provider selection to execution time
+
+**description:** Refactor the task flow so provider selection occurs when the worker executes the task (dispatch time), not at enqueue time. Introduce a dispatch task that selects the provider using current rate/health/distribution state and then calls the send task. Update retries to re-dispatch with exclusion of failed provider.
+
+**acceptance_criteria:**
+
+- Given an incoming SMS request
+- When it is enqueued
+- Then the queued task contains only message payload (no provider chosen)
+- And the worker selects the provider right before sending
+- And retries schedule a re-dispatch excluding the failed provider
+
+**assignee:** github-copilot
+**state:** done
+**priority:** P0
+**created_at:** 2025-10-10T00:00:00Z
+**updated_at:** 2025-10-10T00:00:00Z
 | T-011 | test    | Write comprehensive unit tests | jest-test-engineer | ready | P1       | 2025-10-09T12:40:28Z | 2025-10-09T12:40:28Z |
 | T-011 | test    | Write integration tests for full workflow | jest-test-engineer | ready | P1       | 2025-10-09T12:40:28Z | 2025-10-09T12:40:28Z |
 | T-013 | docs    | Create developer guide and API documentation | orchestrator | ready | P2       | 2025-10-09T12:40:28Z | 2025-10-09T12:40:28Z |

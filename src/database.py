@@ -63,9 +63,11 @@ def get_session_factory():
 
 
 @contextmanager
-def get_db_session():
+def get_db_session(session_factory=None):
     """Context manager for database sessions with automatic cleanup."""
-    session = get_session_factory()()
+    if session_factory is None:
+        session_factory = get_session_factory()
+    session = session_factory()
     try:
         yield session
         session.commit()
@@ -80,8 +82,8 @@ def get_db_session():
 class SMSRequestRepository:
     """Repository for SMS request operations."""
 
-    def __init__(self):
-        self.engine = get_db_engine()
+    def __init__(self, engine=None):
+        self.engine = engine or get_db_engine()
 
     def create_request(self, phone: str, text: str, provider_used: Optional[str] = None) -> SMSRequest:
         """Create a new SMS request in the database."""
@@ -139,25 +141,27 @@ class SMSRequestRepository:
     def get_request_by_id(self, request_id: int) -> Optional[SMSRequest]:
         """Get SMS request by ID."""
         with get_db_session() as session:
-            return session.query(SMSRequest).filter(SMSRequest.id == request_id).first()
+            return session.get(SMSRequest, request_id)
 
     def get_requests_by_status(self, status: str, limit: int = 100) -> List[SMSRequest]:
         """Get SMS requests by status."""
         with get_db_session() as session:
-            return session.query(SMSRequest).filter(SMSRequest.status == status).limit(limit).all()
+            return session.exec(select(SMSRequest).where(SMSRequest.status == status).limit(limit)).all()
 
     def get_requests_by_provider(self, provider: str, limit: int = 100) -> List[SMSRequest]:
         """Get SMS requests by provider."""
         with get_db_session() as session:
-            return session.query(SMSRequest).filter(SMSRequest.provider_used == provider).limit(limit).all()
+            return session.exec(select(SMSRequest).where(SMSRequest.provider_used == provider).limit(limit)).all()
 
     def get_requests_by_time_range(self, start_time: datetime, end_time: datetime,
                                   limit: int = 100) -> List[SMSRequest]:
         """Get SMS requests within time range."""
         with get_db_session() as session:
-            return session.query(SMSRequest).filter(
-                and_(SMSRequest.created_at >= start_time, SMSRequest.created_at <= end_time)
-            ).limit(limit).all()
+            return session.exec(
+                select(SMSRequest).where(
+                    and_(SMSRequest.created_at >= start_time, SMSRequest.created_at <= end_time)
+                ).limit(limit)
+            ).all()
 
     def get_requests_with_filters(self, status: Optional[str] = None,
                                  provider: Optional[str] = None,
@@ -166,21 +170,18 @@ class SMSRequestRepository:
                                  limit: int = 100) -> List[SMSRequest]:
         """Get SMS requests with multiple filters."""
         with get_db_session() as session:
-            conditions = []
-
+            query = select(SMSRequest)
+            
             if status:
-                conditions.append(SMSRequest.status == status)
+                query = query.where(SMSRequest.status == status)
             if provider:
-                conditions.append(SMSRequest.provider_used == provider)
+                query = query.where(SMSRequest.provider_used == provider)
             if start_time:
-                conditions.append(SMSRequest.created_at >= start_time)
+                query = query.where(SMSRequest.created_at >= start_time)
             if end_time:
-                conditions.append(SMSRequest.created_at <= end_time)
+                query = query.where(SMSRequest.created_at <= end_time)
 
-            if conditions:
-                return session.query(SMSRequest).filter(and_(*conditions)).limit(limit).all()
-            else:
-                return session.query(SMSRequest).limit(limit).all()
+            return session.exec(query.limit(limit)).all()
 
     def get_request_stats(self) -> Dict[str, Any]:
         """Get SMS request statistics."""
@@ -212,8 +213,8 @@ class SMSRequestRepository:
 class SMSResponseRepository:
     """Repository for SMS response operations."""
 
-    def __init__(self):
-        self.engine = get_db_engine()
+    def __init__(self, engine=None):
+        self.engine = engine or get_db_engine()
 
     def create_response(self, request_id: int, response_data: str, status_code: int) -> SMSResponse:
         """Create a new SMS response in the database."""
@@ -240,22 +241,24 @@ class SMSResponseRepository:
     def get_response_by_request_id(self, request_id: int) -> Optional[SMSResponse]:
         """Get SMS response by request ID."""
         with get_db_session() as session:
-            return session.query(SMSResponse).filter(SMSResponse.request_id == request_id).first()
+            return session.exec(select(SMSResponse).where(SMSResponse.request_id == request_id)).first()
 
     def get_responses_by_time_range(self, start_time: datetime, end_time: datetime,
                                    limit: int = 100) -> List[SMSResponse]:
         """Get SMS responses within time range."""
         with get_db_session() as session:
-            return session.query(SMSResponse).filter(
-                and_(SMSResponse.created_at >= start_time, SMSResponse.created_at <= end_time)
-            ).limit(limit).all()
+            return session.exec(
+                select(SMSResponse).where(
+                    and_(SMSResponse.created_at >= start_time, SMSResponse.created_at <= end_time)
+                ).limit(limit)
+            ).all()
 
 
 class SMSRetryRepository:
     """Repository for SMS retry operations."""
 
-    def __init__(self):
-        self.engine = get_db_engine()
+    def __init__(self, engine=None):
+        self.engine = engine or get_db_engine()
 
     def create_retry(self, request_id: int, attempt_number: int, provider_used: str,
                     error_message: str, delay_seconds: int) -> SMSRetry:
@@ -279,21 +282,21 @@ class SMSRetryRepository:
     def get_retries_by_request_id(self, request_id: int) -> List[SMSRetry]:
         """Get all retry records for a request."""
         with get_db_session() as session:
-            return session.query(SMSRetry).filter(SMSRetry.request_id == request_id).all()
+            return session.exec(select(SMSRetry).where(SMSRetry.request_id == request_id)).all()
 
 
 class ProviderHealthRepository:
     """Repository for provider health operations."""
 
-    def __init__(self):
-        self.engine = get_db_engine()
+    def __init__(self, engine=None):
+        self.engine = engine or get_db_engine()
 
     def update_provider_health(self, provider_name: str, success: bool) -> ProviderHealth:
         """Update provider health metrics."""
         with get_db_session() as session:
             # Get existing health record or create new one
-            health_record = session.query(ProviderHealth).filter(
-                ProviderHealth.provider_name == provider_name
+            health_record = session.exec(
+                select(ProviderHealth).where(ProviderHealth.provider_name == provider_name)
             ).first()
 
             if not health_record:
@@ -323,20 +326,22 @@ class ProviderHealthRepository:
     def get_provider_health(self, provider_name: str) -> Optional[ProviderHealth]:
         """Get provider health record."""
         with get_db_session() as session:
-            return session.query(ProviderHealth).filter(
-                ProviderHealth.provider_name == provider_name
+            return session.exec(
+                select(ProviderHealth).where(ProviderHealth.provider_name == provider_name)
             ).first()
 
     def get_all_providers_health(self) -> Dict[str, ProviderHealth]:
         """Get health records for all providers."""
         with get_db_session() as session:
-            health_records = session.query(ProviderHealth).all()
+            health_records = session.exec(select(ProviderHealth)).all()
             return {record.provider_name: record for record in health_records}
 
     def reset_provider_health(self, provider_name: str) -> bool:
         """Reset health metrics for a provider."""
         with get_db_session() as session:
-            health_record = session.get(ProviderHealth, provider_name)
+            health_record = session.exec(
+                select(ProviderHealth).where(ProviderHealth.provider_name == provider_name)
+            ).first()
             if not health_record:
                 return False
 
@@ -356,35 +361,35 @@ _sms_retry_repo = None
 _provider_health_repo = None
 
 
-def get_sms_request_repository() -> SMSRequestRepository:
+def get_sms_request_repository(engine=None) -> SMSRequestRepository:
     """Get SMS request repository instance."""
     global _sms_request_repo
-    if _sms_request_repo is None:
-        _sms_request_repo = SMSRequestRepository()
+    if _sms_request_repo is None or engine is not None:
+        _sms_request_repo = SMSRequestRepository(engine=engine)
     return _sms_request_repo
 
 
-def get_sms_response_repository() -> SMSResponseRepository:
+def get_sms_response_repository(engine=None) -> SMSResponseRepository:
     """Get SMS response repository instance."""
     global _sms_response_repo
-    if _sms_response_repo is None:
-        _sms_response_repo = SMSResponseRepository()
+    if _sms_response_repo is None or engine is not None:
+        _sms_response_repo = SMSResponseRepository(engine=engine)
     return _sms_response_repo
 
 
-def get_sms_retry_repository() -> SMSRetryRepository:
+def get_sms_retry_repository(engine=None) -> SMSRetryRepository:
     """Get SMS retry repository instance."""
     global _sms_retry_repo
-    if _sms_retry_repo is None:
-        _sms_retry_repo = SMSRetryRepository()
+    if _sms_retry_repo is None or engine is not None:
+        _sms_retry_repo = SMSRetryRepository(engine=engine)
     return _sms_retry_repo
 
 
-def get_provider_health_repository() -> ProviderHealthRepository:
+def get_provider_health_repository(engine=None) -> ProviderHealthRepository:
     """Get provider health repository instance."""
     global _provider_health_repo
-    if _provider_health_repo is None:
-        _provider_health_repo = ProviderHealthRepository()
+    if _provider_health_repo is None or engine is not None:
+        _provider_health_repo = ProviderHealthRepository(engine=engine)
     return _provider_health_repo
 
 
@@ -398,8 +403,8 @@ def initialize_database():
         # Initialize provider health records
         with get_db_session() as session:
             for provider_name in ["provider1", "provider2", "provider3"]:
-                existing = session.query(ProviderHealth).filter(
-                    ProviderHealth.provider_name == provider_name
+                existing = session.exec(
+                    select(ProviderHealth).where(ProviderHealth.provider_name == provider_name)
                 ).first()
                 if not existing:
                     health_record = ProviderHealth(provider_name=provider_name)

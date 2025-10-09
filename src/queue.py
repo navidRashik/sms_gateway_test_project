@@ -9,7 +9,6 @@ This module provides the primary SMS sending endpoint that:
 """
 
 import logging
-import uuid
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 
@@ -20,7 +19,7 @@ from .config import settings
 from .rate_limiter import RateLimiter, GlobalRateLimiter, create_rate_limiter, create_global_rate_limiter
 from .tasks import queue_sms_task
 from .distribution import create_distribution_service, SMSDistributionService
-from .health_tracker import create_health_tracker, ProviderHealthTracker
+from .health_tracker import create_health_tracker
 from .database import get_sms_request_repository, get_sms_response_repository
 
 # Configure logging
@@ -28,6 +27,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Pydantic models for request/response validation
+
 class SMSRequest(BaseModel):
     """SMS request model."""
     phone: str = Field(..., min_length=10, max_length=15, description="Phone number in international format")
@@ -120,7 +120,6 @@ async def send_sms_root(
     request: SMSRequest,
     redis_client=Depends(get_redis_client),
     rate_limiters=Depends(get_rate_limiters),
-    distribution_service=Depends(get_distribution_service)
 ) -> SMSResponse:
     """
     Send SMS with intelligent queueing and rate limiting (main endpoint).
@@ -144,7 +143,6 @@ async def send_sms_root(
         request=request,
         redis_client=redis_client,
         rate_limiters=rate_limiters,
-        distribution_service=distribution_service
     )
 
 
@@ -203,9 +201,6 @@ async def send_sms(
         message_id = await queue_sms_task(
             phone=request.phone,
             text=request.text,
-            rate_limiter=rate_limiter,
-            global_rate_limiter=global_rate_limiter,
-            distribution_service=distribution_service
         )
 
         if message_id:
@@ -614,4 +609,26 @@ async def reset_distribution_stats(
     return {
         "success": True,
         "message": "Distribution statistics reset"
+    }
+
+
+@router.get(
+    "/queue-status",
+    summary="Get queue status",
+    description="Get current queue status and configuration",
+    response_description="Queue status information",
+)
+async def get_queue_status() -> Dict[str, Any]:
+    """
+    Get current queue status and configuration.
+
+    Returns:
+        Queue status information
+    """
+    return {
+        "status": "active",
+        "queue_type": "redis_taskiq",
+        "providers_configured": 3,
+        "max_concurrent_workers": 20,
+        "task_retry_limit": 5,
     }

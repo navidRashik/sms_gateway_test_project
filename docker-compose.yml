@@ -155,6 +155,24 @@ services:
       replicas: 1  # Ensure only one scheduler instance
       restart_policy:
         condition: on-failure
+    
+
+  # Test service for running all tests
+  tests:
+    build: .
+    command: uv run pytest tests/ --log-level DEBUG --disable-warnings
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=sqlite:///./data/sms_gateway.db
+      - TASKIQ_BROKER_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - sqlite_data:/app/data
+    networks:
+      - twillow-network
 
 volumes:
   redis_data:

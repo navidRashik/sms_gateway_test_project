@@ -58,3 +58,9 @@
 - **REDIS RATE LIMITING PATTERN**: Use fixed keys with expiry, NOT timestamped keys. Pattern: `rate_limit:provider_id` with INCR + EXPIRE, not `rate_limit:provider_id:timestamp`
 - **Counter Accumulation**: Rate limit counters must accumulate within the time window, use Redis INCR on consistent keys that expire after the window period
 - **Key Persistence**: Rate limiting keys should persist for the entire window duration to properly track request counts within that window
+
+## Provider Selection Strategy (Update)
+
+- **Execution-time Provider Selection**: Do NOT choose provider at enqueue time. Enqueue a lightweight dispatch task with just the message payload. The worker selects the provider right before sending using current rate limits and health state.
+- **Retries Re-dispatch**: On failure/timeouts, schedule a re-dispatch task (not the provider-specific send) with the failed provider added to an exclusion list to avoid immediate reuse.
+- **Distribution Service**: Keep using SMSDistributionService for selection when available; if exclusions are provided, fall back to simple selection honoring exclusions.

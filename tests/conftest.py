@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from redis.asyncio import Redis
+from sqlmodel import SQLModel, create_engine
+from sqlalchemy.orm import sessionmaker
 
 
 @pytest.fixture(scope="session")
@@ -86,3 +88,22 @@ def rate_limit_config():
         "global_rate_limit": 200,
         "window_seconds": 1
     }
+
+
+@pytest.fixture
+def test_db_engine():
+    """Create in-memory SQLite database engine for testing."""
+    engine = create_engine("sqlite:///:memory:")
+    SQLModel.metadata.create_all(engine)
+    return engine
+
+
+@pytest.fixture
+def test_db_session(test_db_engine):
+    """Create database session for testing."""
+    session_local = sessionmaker(bind=test_db_engine, expire_on_commit=False)
+    session = session_local()
+    try:
+        yield session
+    finally:
+        session.close()

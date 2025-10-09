@@ -8,7 +8,6 @@ for asynchronous SMS sending with proper error handling and retries.
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple, Set
 
 import httpx
@@ -19,7 +18,14 @@ from .config import settings
 from .taskiq_config import TaskIQConfig, calculate_retry_delay
 from .taskiq_scheduler import broker
 from .retry_service import RetryService
-from .database import get_sms_request_repository, get_sms_response_repository, get_sms_retry_repository, get_provider_health_repository
+from .database import (
+    get_sms_request_repository,
+    get_sms_response_repository,
+    get_provider_health_repository,
+)
+from .rate_limiter import create_rate_limiter, create_global_rate_limiter
+from .health_tracker import create_health_tracker
+from .distribution import create_distribution_service
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -166,15 +172,14 @@ async def send_sms_to_provider(
 
                     # Schedule the retry task with the calculated delay
                     try:
-                        send_sms_to_provider.kiq(
-                            provider_url=provider_url,
+                        # Re-dispatch to select a fresh provider at execution time
+                        dispatch_sms.kiq(
                             phone=phone,
                             text=text,
                             message_id=message_id,
-                            provider_id=provider_id,
-                            retry_count=retry_count + 1,
-                            health_tracker=health_tracker,
                             request_id=request_id,
+                            exclude_providers=[provider_id],
+                            retry_count=retry_count + 1,
                         ).schedule_by_time(redis_source, scheduled_time)
 
                         # Return failure result immediately - the retry will be handled by TaskIQ scheduler
@@ -191,16 +196,14 @@ async def send_sms_to_provider(
                         logger.error(
                             f"Failed to schedule retry for {message_id}: {str(e)}"
                         )
-                        # Fallback to immediate queuing if scheduling fails
-                        send_sms_to_provider.kiq(
-                            provider_url=provider_url,
+                        # Fallback to immediate re-dispatch if scheduling fails
+                        dispatch_sms.kiq(
                             phone=phone,
                             text=text,
                             message_id=message_id,
-                            provider_id=provider_id,
-                            retry_count=retry_count + 1,
-                            health_tracker=health_tracker,
                             request_id=request_id,
+                            exclude_providers=[provider_id],
+                            retry_count=retry_count + 1,
                         )
 
                         return {
@@ -260,15 +263,13 @@ async def send_sms_to_provider(
 
             # Schedule the retry task with the calculated delay
             try:
-                send_sms_to_provider.kiq(
-                    provider_url=provider_url,
+                dispatch_sms.kiq(
                     phone=phone,
                     text=text,
                     message_id=message_id,
-                    provider_id=provider_id,
-                    retry_count=retry_count + 1,
-                    health_tracker=health_tracker,
                     request_id=request_id,
+                    exclude_providers=[provider_id],
+                    retry_count=retry_count + 1,
                 ).schedule_by_time(redis_source, scheduled_time)
 
                 # Return failure result immediately - the retry will be handled by TaskIQ scheduler
@@ -285,16 +286,14 @@ async def send_sms_to_provider(
                 logger.error(
                     f"Failed to schedule timeout retry for {message_id}: {str(e)}"
                 )
-                # Fallback to immediate queuing if scheduling fails
-                send_sms_to_provider.kiq(
-                    provider_url=provider_url,
+                # Fallback to immediate re-dispatch if scheduling fails
+                dispatch_sms.kiq(
                     phone=phone,
                     text=text,
                     message_id=message_id,
-                    provider_id=provider_id,
-                    retry_count=retry_count + 1,
-                    health_tracker=health_tracker,
                     request_id=request_id,
+                    exclude_providers=[provider_id],
+                    retry_count=retry_count + 1,
                 )
 
                 return {
@@ -354,15 +353,13 @@ async def send_sms_to_provider(
 
             # Schedule the retry task with the calculated delay
             try:
-                send_sms_to_provider.kiq(
-                    provider_url=provider_url,
+                dispatch_sms.kiq(
                     phone=phone,
                     text=text,
                     message_id=message_id,
-                    provider_id=provider_id,
-                    retry_count=retry_count + 1,
-                    health_tracker=health_tracker,
                     request_id=request_id,
+                    exclude_providers=[provider_id],
+                    retry_count=retry_count + 1,
                 ).schedule_by_time(redis_source, scheduled_time)
 
                 # Return failure result immediately - the retry will be handled by TaskIQ scheduler
@@ -379,16 +376,14 @@ async def send_sms_to_provider(
                 logger.error(
                     f"Failed to schedule error retry for {message_id}: {str(e)}"
                 )
-                # Fallback to immediate queuing if scheduling fails
-                send_sms_to_provider.kiq(
-                    provider_url=provider_url,
+                # Fallback to immediate re-dispatch if scheduling fails
+                dispatch_sms.kiq(
                     phone=phone,
                     text=text,
                     message_id=message_id,
-                    provider_id=provider_id,
-                    retry_count=retry_count + 1,
-                    health_tracker=health_tracker,
                     request_id=request_id,
+                    exclude_providers=[provider_id],
+                    retry_count=retry_count + 1,
                 )
 
                 return {
@@ -505,7 +500,8 @@ async def select_best_provider(
     rate_limiter,
     global_rate_limiter,
     health_tracker=None,
-    distribution_service=None
+    distribution_service=None,
+    exclude_providers: Optional[Set[str]] = None,
 ) -> Optional[Tuple[str, str]]:
     """
     Select the best available provider using intelligent distribution logic.
@@ -519,8 +515,8 @@ async def select_best_provider(
     Returns:
         Tuple of (provider_id, provider_url) or None if no provider available
     """
-    # Use new distribution service if available
-    if distribution_service is not None:
+    # Use new distribution service if available (no exclusion support here yet)
+    if distribution_service is not None and not exclude_providers:
         return await distribution_service.select_provider()
 
     # Fallback to old logic if distribution service is not available
@@ -533,7 +529,13 @@ async def select_best_provider(
         return None
 
     # Check each provider's rate limit and health status
+    exclude_providers = exclude_providers or set()
+
     for provider_id, provider_url in providers.items():
+        # Skip excluded providers
+        if provider_id in exclude_providers:
+            logger.debug(f"Excluding provider {provider_id} from selection")
+            continue
         # Check rate limit
         allowed, count = await rate_limiter.is_allowed(provider_id)
         if not allowed:
@@ -554,13 +556,85 @@ async def select_best_provider(
     return None
 
 
+@broker.task
+async def dispatch_sms(
+    phone: str,
+    text: str,
+    message_id: str,
+    request_id: Optional[int] = None,
+    exclude_providers: Optional[list[str]] = None,
+    retry_count: int = 0,
+) -> Optional[str]:
+    """Task that selects provider at execution time and dispatches send."""
+    try:
+        redis_client = get_redis_client()
+        # Build dependencies fresh for up-to-date state
+        rate_limiter = await create_rate_limiter(redis_client)
+        global_rate_limiter = await create_global_rate_limiter(redis_client)
+        health_tracker = await create_health_tracker(redis_client)
+        provider_urls = await get_available_providers()
+        distribution_service = await create_distribution_service(
+            health_tracker=health_tracker,
+            rate_limiter=rate_limiter,
+            global_rate_limiter=global_rate_limiter,
+            provider_urls=provider_urls,
+        )
+
+        selection = await select_best_provider(
+            rate_limiter,
+            global_rate_limiter,
+            health_tracker,
+            distribution_service,
+            exclude_providers=set(exclude_providers or []),
+        )
+
+        if not selection:
+            logger.warning(
+                f"No available provider at execution time for message {message_id}"
+            )
+            return None
+
+        provider_id, provider_url = selection
+
+        # Update DB with processing status and chosen provider
+        if request_id:
+            try:
+                sms_request_repo = get_sms_request_repository()
+                sms_request_repo.update_request_status(
+                    request_id, "processing", provider_id
+                )
+            except Exception as db_error:
+                logger.error(
+                    f"Failed to update request {request_id} before send: {db_error}"
+                )
+
+        # Enqueue the actual send
+        send_sms_to_provider.kiq(
+            provider_url=provider_url,
+            phone=phone,
+            text=text,
+            message_id=message_id,
+            provider_id=provider_id,
+            retry_count=retry_count,
+            health_tracker=health_tracker,
+            request_id=request_id,
+        )
+
+        logger.info(f"Dispatched SMS {message_id} to provider {provider_id}")
+        return message_id
+
+    except Exception as e:
+        logger.error(f"Error in dispatch_sms for message {message_id}: {e}")
+        return None
+
+
 async def queue_sms_task(
     phone: str,
     text: str,
-    rate_limiter,
-    global_rate_limiter,
+    rate_limiter=None,
+    global_rate_limiter=None,
     health_tracker=None,
-    distribution_service=None
+    distribution_service=None,
 ) -> Optional[str]:
     """
     Queue an SMS task for processing.
@@ -579,44 +653,28 @@ async def queue_sms_task(
     message_id = f"msg_{int(asyncio.get_event_loop().time())}_{str(uuid.uuid4())[:8]}"
 
     try:
-        # Select best provider
-        provider_selection = await select_best_provider(
-            rate_limiter,
-            global_rate_limiter,
-            health_tracker,
-            distribution_service
-        )
-
-        if not provider_selection:
-            logger.warning(f"No available provider for message {message_id}")
-            return None
-
-        provider_id, provider_url = provider_selection
-
-        # Persist SMS request in database
+        # Persist SMS request in database (provider will be chosen later)
         sms_request_repo = get_sms_request_repository()
         sms_request = sms_request_repo.create_request(
+            phone=phone, text=text, provider_used=None
+        )
+
+        # Mark as processing since it's now enqueued for dispatch
+        sms_request_repo.update_request_status(sms_request.id, "processing")
+
+        # Queue the dispatch task which selects provider at execution time
+        dispatch_sms.kiq(
             phone=phone,
             text=text,
-            provider_used=provider_id
+            message_id=message_id,
+            request_id=sms_request.id,
+            exclude_providers=None,
+            retry_count=0,
         )
 
-        # Update status to processing since we're about to queue it
-        sms_request_repo.update_request_status(sms_request.id, "processing", provider_id)
-
-        # Queue the task with the database request ID
-        send_sms_to_provider.kiq(
-            provider_url,
-            phone,
-            text,
-            message_id,
-            provider_id,
-            0,  # retry_count
-            health_tracker,
-            sms_request.id  # Pass the database request ID
+        logger.info(
+            f"Queued SMS dispatch task {message_id} (request ID: {sms_request.id})"
         )
-
-        logger.info(f"Queued SMS task {message_id} for provider {provider_id} (request ID: {sms_request.id})")
         return message_id
 
     except Exception as e:
