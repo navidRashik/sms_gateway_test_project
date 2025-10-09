@@ -1,0 +1,28 @@
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Copy package files
+COPY package*.json ./
+
+# Install dependencies (including dev dependencies for ts-node)
+RUN npm ci
+
+# Copy source code
+COPY sms_gateway_provider.ts .
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+USER nodejs
+
+# Expose port (will be overridden by docker-compose)
+EXPOSE 8071
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+    CMD node -e "require('http').get('http://localhost:' + process.env.PORT + '/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"
+
+# Start the provider service
+CMD ["npx", "tsx", "sms_gateway_provider.ts"]

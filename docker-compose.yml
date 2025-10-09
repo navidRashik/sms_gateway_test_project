@@ -1,0 +1,111 @@
+version: '3.8'
+
+services:
+  # Redis for queueing and rate limiting
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - twillow-network
+
+  # Main FastAPI application
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=sqlite:///./data/sms_gateway.db
+      - PROVIDER1_URL=http://provider1:8071/api/sms/provider1
+      - PROVIDER2_URL=http://provider2:8072/api/sms/provider2
+      - PROVIDER3_URL=http://provider3:8073/api/sms/provider3
+      - TASKIQ_BROKER_URL=redis://redis:6379
+      - DEBUG=true
+    depends_on:
+      redis:
+        condition: service_healthy
+      provider1:
+        condition: service_healthy
+      provider2:
+        condition: service_healthy
+      provider3:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - sqlite_data:/app/data
+    networks:
+      - twillow-network
+
+  # SMS Provider 1 (TypeScript service)
+  provider1:
+    build:
+      context: .
+      dockerfile: Dockerfile.nodejs
+    ports:
+      - "8071:8071"
+    environment:
+      - SERVICE_PROVIDER_INDEX=1
+      - PORT_SMS_1=8071
+      - PORT_EMAIL_1=8091
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8071/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - twillow-network
+
+  # SMS Provider 2 (TypeScript service)
+  provider2:
+    build:
+      context: .
+      dockerfile: Dockerfile.nodejs
+    ports:
+      - "8072:8072"
+    environment:
+      - SERVICE_PROVIDER_INDEX=2
+      - PORT_SMS_2=8072
+      - PORT_EMAIL_2=8092
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8072/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - twillow-network
+
+  # SMS Provider 3 (TypeScript service)
+  provider3:
+    build:
+      context: .
+      dockerfile: Dockerfile.nodejs
+    ports:
+      - "8073:8073"
+    environment:
+      - SERVICE_PROVIDER_INDEX=3
+      - PORT_SMS_3=8073
+      - PORT_EMAIL_3=8093
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8073/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - twillow-network
+
+volumes:
+  redis_data:
+  sqlite_data:
+
+networks:
+  twillow-network:
+    driver: bridge
