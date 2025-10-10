@@ -1,10 +1,10 @@
 # Twillow SMS Gateway
 
-High-throughput SMS gateway using FastAPI, Redis, TaskIQ, and SQLite. Handles 200 RPS by queuing requests and distributing them across 3 providers (50 RPS each).
+High-throughput SMS gateway using FastAPI, Redis, TaskIQ, and SQLite. Designed to queue incoming SMS requests and distribute them across multiple providers while enforcing per-provider and global rate limits.
 
 ## Quickstart (Docker Compose)
 
-Start services (Redis, mock providers, app):
+Start local services (Redis, provider mocks, app):
 
 ```bash
 docker-compose up --build
@@ -14,10 +14,10 @@ App will be available at http://localhost:8000 and OpenAPI at http://localhost:8
 
 ## Local development (uv)
 
-Install dependencies using uv:
+Install dependencies and run the app locally:
 
 ```bash
-# Install and sync dependencies
+# Install and sync dependencies (using uv)
 uv sync
 
 # Activate the virtual environment
@@ -27,98 +27,124 @@ source .venv/bin/activate
 uvicorn "src.main:app" --reload --host 0.0.0.0 --port 8000
 ```
 
-## Run TaskIQ worker with uv
+## Run TaskIQ worker
+
+Start the background worker that processes SMS tasks:
 
 ```bash
-# Make sure virtual environment is activated
+# Activate virtualenv first (if using .venv)
 source .venv/bin/activate
 
-# Run the worker
+# Run the TaskIQ worker (uses src/worker.py)
 python -m src.worker
 ```
 
-## Development with uv
+## Configuration
 
-This project supports development using uv for faster dependency management:
+Configuration is driven by environment variables or a `.env` file (see [`src/config.py`](src/config.py:40) for defaults and descriptions).
 
-```bash
-# Install dependencies
-uv sync
+Important variables:
+- REDIS_URL (default: redis://localhost:6379)
+- TASKIQ_BROKER_URL (default: redis://localhost:6379)
+- DATABASE_URL (default: sqlite:///./sms_service.db)
+- PROVIDER1_URL, PROVIDER2_URL, PROVIDER3_URL
+- PROVIDER_RATE_LIMIT (default: 50)
+- TOTAL_RATE_LIMIT (default: 200)
+- RATE_LIMIT_WINDOW (default: 1)  <- sliding window duration in seconds (see "Sliding-window testing" below)
+- HEALTH_WINDOW_DURATION (default: 300) <- health tracking window in seconds
+- DEBUG (true/false)
 
-# Run tests
-uv run pytest
-
-# Run the application in development mode
-uv run uvicorn "src.main:app" --reload --host 0.0.0.0 --port 8000
-
-# Run the worker
-uv run python -m src.worker
-```
-
-## Environment variables
-
-See `src/config.py` for defaults. Typical `.env`:
+Example `.env` (project root):
 
 ```bash
+# bash
 REDIS_URL=redis://localhost:6379
 TASKIQ_BROKER_URL=redis://localhost:6379
 DATABASE_URL=sqlite:///./data/sms_gateway.db
 PROVIDER1_URL=http://localhost:8071/api/sms/provider1
 PROVIDER2_URL=http://localhost:8072/api/sms/provider2
 PROVIDER3_URL=http://localhost:8073/api/sms/provider3
+PROVIDER_RATE_LIMIT=50
+TOTAL_RATE_LIMIT=200
+RATE_LIMIT_WINDOW=1
+HEALTH_WINDOW_DURATION=300
 DEBUG=true
 ```
 
-## API
+## Sliding-window note (important for reviewers & manual testing)
 
-OpenAPI UI: `http://localhost:8000/docs` — includes full request/response schemas and example payloads.
+The per-provider and global rate limiting use a sliding/1-second window controlled by the setting `rate_limit_window` (env: `RATE_LIMIT_WINDOW`) defined in [`src/config.py`](src/config.py:40). You can lower this value (for example to `1`) and reduce `HEALTH_WINDOW_DURATION` to a small number (for example `5`) to manually reproduce rate-limit and health-tracking behavior quickly during review.
 
-Main endpoints:
-- POST /api/sms/send — queue SMS (payload: phone, text)
-- POST /api/sms/ — alias for send
-- GET /api/sms/rate-limits — rate limit status
-- GET /api/sms/health — providers health
-- GET /api/sms/health/{provider_id} — provider-specific health
-- POST /api/sms/health/{provider_id}/reset — reset provider health
-- GET /api/sms/distribution-stats — distribution stats
-- POST /api/sms/distribution-stats/reset — reset distribution stats
-- GET /api/sms/requests — list requests
-- GET /api/sms/requests/{request_id} — details for a request
-- Provider direct endpoints: POST /api/sms/provider1, /provider2, /provider3
-- GET /taskiq-status — TaskIQ broker status
+Key testing idea:
+- Set RATE_LIMIT_WINDOW=1 and HEALTH_WINDOW_DURATION=5 to make the system reset counters every second and compute provider health over a short 5-second window.
+- Use a simple load generator (curl loop or small script) to send bursts and observe:
+  - per-provider counters increment and expire each second,
+  - providers hitting their configured limit return 429 from the gateway (or are skipped by distribution),
+  - health tracker flips provider health to unhealthy once failure rate > threshold (see `HEALTH_WINDOW_DURATION` and `health_failure_threshold` in [`src/config.py`](src/config.py:43)).
 
-Examples:
+Example manual test steps:
+1. Start stack:
+   ```bash
+   docker-compose up --build
+   ```
+2. Edit `.env` to set:
+   ```bash
+   RATE_LIMIT_WINDOW=1
+   HEALTH_WINDOW_DURATION=5
+   PROVIDER_RATE_LIMIT=5
+   TOTAL_RATE_LIMIT=20
+   ```
+3. Send a small burst of requests (example using bash loop):
+   ```bash
+   for i in {1..30}; do
+     curl -sS -X POST http://localhost:8000/api/sms \
+       -H "Content-Type: application/json" \
+       -d '{"phone":"+15551234567","text":"test '$i'"}' &
+   done
+   wait
+   ```
+4. Observe repository logs (app + worker) and Redis keys; you should see some requests rejected/queued due to rate limits and provider health events if provider mocks are failing.
 
-```bash
-curl -X POST http://localhost:8000/api/sms/send \
-  -H "Content-Type: application/json" \
-  -d '{"phone":"01921317475","text":"Hello"}'
-```
+## Running tests
 
-## Architecture (short)
-
-Components: FastAPI app, Redis (broker + counters), TaskIQ workers, SQLite persistence, provider services.
-
-Data flow: Client -> FastAPI -> Redis counters -> DB + TaskIQ enqueue -> Worker -> Distribution service -> Provider -> DB
-
-## Troubleshooting (quick)
-
-- Redis unreachable: check docker-compose and REDIS_URL
-- Tasks not processed: ensure worker is running and TASKIQ_BROKER_URL matches Redis
-- 429 responses: global rate limit hit; lower client RPS or adjust limits
-- Provider timeouts/unreachable: verify PROVIDER*_URL and provider service logs
-- SQLite locked: stop other processes accessing DB or use Postgres for multi-dev
-
-## Tests
+Run full test suite:
 
 ```bash
+# from project root
 pytest -q
 ```
 
+Run targeted tests (quick reviewer checks):
+
+```bash
+# Health tracker tests
+pytest tests/test_health_tracker.py::TestProviderHealthTracker -q
+
+# Rate limiter high-load scenario
+pytest tests/test_rate_limiter_high_load.py -q -k "rate_limiter"
+
+# Distribution / queue focused tests
+pytest tests/test_queue.py::TestQueue -q
+```
+
+Notes:
+- Many tests use `redis.AsyncMock` fixtures; they run fast and do not require a real Redis instance.
+- Integration tests that simulate end-to-end behavior provide in-memory mocks for Redis to make results deterministic for CI/review.
+
+## Architecture (short)
+
+- FastAPI app (`src/main.py`) exposes the `/api/sms` endpoint that validates and queues requests.
+- TaskIQ (Redis broker) is used to process tasks asynchronously (worker in `src/worker.py`).
+- Rate limiting is implemented in [`src/rate_limiter.py`](src/rate_limiter.py) and enforced both at middleware and distribution layers.
+- Provider distribution and health-aware routing implemented in [`src/distribution.py`](src/distribution.py) and [`src/health_tracker.py`](src/health_tracker.py).
+- Retries and exponential backoff handled in [`src/retry_service.py`](src/retry_service.py).
+
+## Troubleshooting (quick)
+
+- If the worker doesn't pick tasks: ensure Redis is reachable at `TASKIQ_BROKER_URL`.
+- If rate limits behave unexpectedly: check `RATE_LIMIT_WINDOW` and ensure provider keys are expiring (per-window).
+- To debug health tracking issues, temporarily lower `HEALTH_WINDOW_DURATION` and enable `DEBUG` to see logs.
+
 ## Contributing
 
-See `.agents/` for planning and task lifecycle. Open PRs against `develop` or `main` per repo policy.
-
-## License
-
-MIT
+Follow branch/PR conventions in `AGENTS.md`. Create a feature branch, include tests for new behavior, and ensure CI passes.

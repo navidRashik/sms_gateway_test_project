@@ -1,39 +1,46 @@
 # Developer Guide: Twillow SMS Gateway
 
 ## Overview
-This document contains developer setup instructions, API documentation, architecture overview, troubleshooting guide, and a developer onboarding checklist for the Twillow SMS Gateway (FastAPI + Redis + TaskIQ + SQLite). It follows the conventions described in `AGENTS.md`.
+This document provides developer setup instructions, architecture overview, configuration reference, testing guidance (unit, integration, manual), and a reviewer-focused quick validation guide for the Twillow SMS Gateway (FastAPI + Redis + TaskIQ + SQLite).
+
+The documentation highlights the sliding-window behavior used by the rate limiter and health tracker and provides step-by-step instructions to manually verify the architecture by shortening the windows for fast feedback during review.
 
 ## Goals & Success Criteria
-- Run the service locally and in Docker Compose
-- Send SMS requests through the queue and observe TaskIQ workers processing them
-- Achieve throughput behavior consistent with provider and global rate limits
-- Provide reproducible troubleshooting guidance for common failures
+- Start the service locally (Docker Compose) and run end-to-end scenarios.
+- Verify rate limiting (per-provider and global) and the TaskIQ-based processing pipeline.
+- Reproduce provider health transitions and retry behavior deterministically.
+- Provide quick commands so reviewers can validate core behavior within ~10 minutes.
 
 ## Prerequisites
 - Python 3.11+
-- Node.js 18+ (for local provider mocks)
-- Docker & Docker Compose (for running Redis and provider mocks)
+- Node.js 18+ (optional, for provider mocks)
+- Docker & Docker Compose (recommended for local stack)
 - Git
 - Recommended: GNU Make (optional convenience)
 
 ## Repository layout (important files)
-- src/ — Python application code (FastAPI)
-- docs/ — documentation (this file)
-- docker-compose.yml — local stack (Redis, app, three provider mocks)
-- Dockerfile / Dockerfile.nodejs — build images
-- requirements.txt / pyproject.toml — Python dependencies (managed via uv)
-- alembic/ — DB migrations
-- .agents/ — planning & worklist (per project policy)
+- `src/` — Python application code (FastAPI)
+- `docs/` — documentation (this file)
+- `docker-compose.yml` — local stack (Redis, app, provider mocks)
+- `Dockerfile` / `Dockerfile.nodejs` — container builds
+- `requirements.txt` / `pyproject.toml` — Python dependencies
+- `alembic/` — DB migrations
+- `tests/` — unit & integration tests
+- `.agents/` — planning & worklist (per project policy)
 
-## Environment & Configuration
-Configuration is primarily via environment variables or `.env` (see `src/config.py`):
+## Configuration
+Configuration is primarily via environment variables or a `.env` file. See [`src/config.py`](src/config.py:1) for full defaults and descriptions.
 
+Key configuration variables:
 - REDIS_URL (default: redis://localhost:6379)
 - TASKIQ_BROKER_URL (default: redis://localhost:6379)
-- DATABASE_URL (default: sqlite:///./data/sms_gateway.db)
-- PROVIDER1_URL, PROVIDER2_URL, PROVIDER3_URL (provider endpoints)
-- PROVIDER_RATE_LIMIT (default: 50)
-- TOTAL_RATE_LIMIT (default: 200)
+- DATABASE_URL (default: sqlite:///./sms_service.db)
+- PROVIDER1_URL, PROVIDER2_URL, PROVIDER3_URL — provider endpoints
+- PROVIDER_RATE_LIMIT (default: 50) — requests per second per provider
+- TOTAL_RATE_LIMIT (default: 200) — global requests per second
+- RATE_LIMIT_WINDOW (default: 1) — sliding window duration in seconds (see Sliding-window testing)
+- HEALTH_WINDOW_DURATION (default: 300) — window in seconds used by health tracker
+- HEALTH_FAILURE_THRESHOLD (default: 0.7) — failure rate threshold (70%)
 - DEBUG (true/false)
 
 Example `.env` (project root):
@@ -45,263 +52,176 @@ DATABASE_URL=sqlite:///./data/sms_gateway.db
 PROVIDER1_URL=http://localhost:8071/api/sms/provider1
 PROVIDER2_URL=http://localhost:8072/api/sms/provider2
 PROVIDER3_URL=http://localhost:8073/api/sms/provider3
+PROVIDER_RATE_LIMIT=50
+TOTAL_RATE_LIMIT=200
+RATE_LIMIT_WINDOW=1
+HEALTH_WINDOW_DURATION=300
+HEALTH_FAILURE_THRESHOLD=0.7
 DEBUG=true
 ```
 
-## Local Developer Setup (step-by-step)
+## Quickstart (Docker Compose)
+Start the local environment that includes Redis, provider mocks and the app:
 
-1. Clone repository
 ```bash
-# bash
-git clone <repo-url> twillow-sms
-cd twillow-sms
-```
-
-2. Python virtualenv and dependencies (prefer using uv)
-```bash
-# bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-# Install dependencies using uv which manages editable installs and pinned hashes.
-# uv will create/enter the virtual environment and install exactly as specified by uv.lock/requirements.
-uv install
-# If you need a plain requirements.txt (for other tooling), uv can export it:
-# uv export --format requirements-txt --output-file requirements.txt
-```
-
-3. Start Redis and provider mocks using Docker Compose (recommended)
-```bash
-# bash
 docker-compose up --build
 ```
-This brings up:
-- redis at redis://localhost:6379
-- provider1 at http://localhost:8071
-- provider2 at http://localhost:8072
-- provider3 at http://localhost:8073
-- app at http://localhost:8000
 
-4. Database migrations (Alembic)
-```bash
-# bash
-export DATABASE_URL=sqlite:///./data/sms_gateway.db
-alembic upgrade head
-```
-(If using docker-compose, the container mounts the data folder and migrations are run as part of startup in some workflows; manually run if needed.)
+- App: http://localhost:8000
+- OpenAPI / Swagger: http://localhost:8000/docs
 
-5. Running the FastAPI app locally (dev)
+Start the worker in a separate terminal (if not run inside compose):
 ```bash
-# bash
-uvicorn "src.main:app" --reload --host 0.0.0.0 --port 8000
-```
+# Activate virtualenv (if using .venv)
+source .venv/bin/activate
 
-6. Running TaskIQ worker(s)
-The project uses TaskIQ with a Redis broker. Start workers in a separate terminal (same venv):
-```bash
-# bash
-# Example: spawn the worker defined in src/worker.py (project-specific)
 python -m src.worker
 ```
-(If a different entrypoint is used for TaskIQ in this project, use the provided script. The TaskIQ broker URL reads TASKIQ_BROKER_URL.)
 
-7. Running tests
+To run the scheduler (if needed):
 ```bash
-# bash
+taskiq scheduler src.taskiq_scheduler:scheduler
+```
+
+## Local developer setup
+1. Install dependencies and sync using uv (if project uses uv):
+```bash
+uv sync
+source .venv/bin/activate
+```
+2. Run app locally:
+```bash
+uvicorn "src.main:app" --reload --host 0.0.0.0 --port 8000
+```
+3. Run unit tests locally:
+```bash
 pytest -q
 ```
 
-## API Documentation (endpoints, request/response examples)
-
-Base URL (local): http://localhost:8000
-OpenAPI UI: http://localhost:8000/docs
-OpenAPI JSON: http://localhost:8000/openapi.json
-
-Common headers:
-- Content-Type: application/json
-
-1) Health endpoints
-- GET /health
-  - Response: {"status":"healthy"}
-
-2) Main SMS endpoints (queueing + rate limiting)
-- POST /api/sms/
-- POST /api/sms/send
-  - Request body (application/json):
-  ```json
-  {
-    "phone": "01921317475",
-    "text": "Hello, this is a test SMS!"
-  }
-  ```
-  - Successful response (queued):
-  ```json
-  {
-    "success": true,
-    "message_id": "7f3c2a2d-...-e1",
-    "message": "SMS queued for sending",
-    "provider": null,
-    "queued": true
-  }
-  ```
-  - Error: 429 if global limit exceeded
-  - Error: 503 if no provider available
-
-cURL example:
+## Running tests (recommended commands for reviewers)
+- Full test suite:
 ```bash
-# bash
-curl -X POST http://localhost:8000/api/sms/send \
-  -H "Content-Type: application/json" \
-  -d '{"phone":"01921317475","text":"Hello"}'
+pytest -q
+```
+- Targeted checks (fast validation):
+```bash
+# Health tracker tests
+pytest tests/test_health_tracker.py::TestProviderHealthTracker -q
+
+# Rate limiter high-load scenarios
+pytest tests/test_rate_limiter_high_load.py -q
+
+# Queue & API focused tests
+pytest tests/test_queue.py -q
+
+# Retry behavior
+pytest tests/test_retry_service.py::TestRetryService -q
 ```
 
-3) Rate-limit status
-- GET /api/sms/rate-limits
-  - Returns provider and global counts and flags.
+Notes:
+- Tests use `tests/conftest.py` fixtures that mock or simulate Redis. Most unit tests do not require a running Redis instance.
+- Integration tests in `tests/` use deterministic in-memory Redis-like stores to make CI repeatable.
 
-4) Provider health & control
-- GET /api/sms/health
-  - List health for all providers
-- GET /api/sms/health/{provider_id}
-  - Example: /api/sms/health/provider1
-- POST /api/sms/health/{provider_id}/reset
-  - Reset health metrics for testing/admins
+## Testing matrix — what to validate
+- Unit tests: logic-heavy modules (rate limiter, health tracker, retry logic, distribution). Look at `tests/test_rate_limiter.py`, `tests/test_health_tracker.py`, `tests/test_retry_service.py`.
+- Integration tests: cross-module interaction (queue -> tasks -> DB). See `tests/test_integration*.py`.
+- Manual end-to-end: use Docker Compose + worker + provider mocks; validate provider distribution, rate limiting, retries, and DB persistence.
 
-5) Distribution & stats
-- GET /api/sms/distribution-stats
-  - Returns weighted round-robin and provider usage statistics
-- POST /api/sms/distribution-stats/reset
-  - Reset distribution stats for tests
+## Sliding-window testing (fast reviewer workflow)
+The project uses a sliding / short-window approach for rate limiting. The window is controlled by `RATE_LIMIT_WINDOW` (seconds) in [`src/config.py`](src/config.py:1). By shortening the window and health window, reviewers can rapidly exercise limits and health transitions.
 
-6) Requests and responses
-- GET /api/sms/requests?limit=50&status=pending
-  - Filter SMS requests
-- GET /api/sms/requests/{request_id}
-  - Get detailed request and associated provider responses
-
-7) Provider direct endpoints (bypass queue)
-- POST /api/sms/provider1
-- POST /api/sms/provider2
-- POST /api/sms/provider3
-  - Same request payload as /api/sms/send
-  - Intended for testing and immediate sends; these call the mock provider endpoints configured by PROVIDER*_URL.
-
-Provider list and status endpoints:
-- GET /api/sms/providers
-- GET /api/sms/provider1/status
-- ... provider2/status, provider3/status
-
-## Example flow (end-to-end)
-1. Client POST /api/sms/send with payload.
-2. FastAPI checks global rate limits (TaskIQ/Redis counters) and provider availability.
-3. If allowed, queue_sms_task saves request record and enqueues TaskIQ job.
-4. TaskIQ worker picks up job, distribution service selects a provider respecting per-provider RPS and health metrics, sends HTTP request to provider endpoint.
-5. Worker stores provider response into responses table; request status updated.
-
-## Architecture Overview
-
-Components
-- FastAPI app (src/) — HTTP API, input validation, rate-limit checks, persistence.
-- Redis — central broker + rate limit counters, queueing and ephemeral counters.
-- TaskIQ (Redis-backed) — asynchronous job execution, retries and concurrency control.
-- SQLite — durable persistence for requests/responses (local dev store; production would use Postgres).
-- Providers (provider1/2/3) — external SMS provider endpoints (mocked in this repo as Node services).
-- Rate limiter (src/rate_limiter.py) — per-provider and global token-bucket / fixed-window counters stored in Redis.
-- Distribution service (src/distribution.py) — weighted/round-robin selection with health-awareness.
-- Health tracker (src/health_tracker.py) — sliding window of provider success/failure to mark unhealthy.
-
-Data flow (simplified)
-Client -> FastAPI (validation & rate checks) -> Persist request -> TaskIQ enqueue -> Worker -> Distribution service -> Provider HTTP -> Worker records response -> DB
-
-ASCII diagram
+Quick steps to reproduce in ~1–2 minutes:
+1. Edit `.env` or export vars in your shell:
+```bash
+export RATE_LIMIT_WINDOW=1
+export PROVIDER_RATE_LIMIT=5
+export TOTAL_RATE_LIMIT=20
+export HEALTH_WINDOW_DURATION=5
+export HEALTH_FAILURE_THRESHOLD=0.7
 ```
-Client
-  |
-  v
-FastAPI (queue endpoint) -- Redis (rate counters)
-  |                         ^
-  v                         |
-Persist request -> TaskIQ broker (Redis) -> Worker(s)
-                                      |
-                                Distribution service
-                                      |
-                                Provider HTTP endpoints
-                                      |
-                                Provider responses -> Worker -> DB
+2. Start the stack:
+```bash
+docker-compose up --build
+# in another terminal start the worker if not started inside compose
+python -m src.worker
+```
+3. Fire a short burst of requests to saturate providers:
+```bash
+for i in {1..30}; do
+  curl -sS -X POST http://localhost:8000/api/sms \
+    -H "Content-Type: application/json" \
+    -d '{"phone":"+15551234567","text":"test '"$i"'"}' &
+done
+wait
+```
+4. Observe:
+- Per-provider Redis keys named `rate_limit:provider1`, `rate_limit:provider2`, `rate_limit:provider3`. Counters increment and expire every `RATE_LIMIT_WINDOW` seconds.
+- Some requests may receive 429 (gateway-side rate limiting) once per-provider limits or total global limit is exceeded.
+- If provider mocks return failures (simulate by making provider mocks respond 500), health tracker aggregates failures over `HEALTH_WINDOW_DURATION` and marks provider unhealthy if failure rate > `HEALTH_FAILURE_THRESHOLD`. The distribution service will then avoid that provider.
+
+Example Redis inspection:
+```bash
+redis-cli GET rate_limit:provider1
+redis-cli --raw --scan | grep rate_limit
 ```
 
-Rate handling summary
-- Each provider: 50 RPS (configurable via PROVIDER_RATE_LIMIT)
-- Global total: 200 RPS (TOTAL_RATE_LIMIT)
-- FastAPI performs quick checks before enqueueing to avoid overwhelming queue
-- Worker uses distribution service to send respecting per-provider limits and provider health
+Expected quick outcomes (with above env):
+- When sending a tight burst, each provider's per-window count should not exceed `PROVIDER_RATE_LIMIT` (5) within a single second; excess requests will be rate-limited or queued.
+- Health flips are visible within `HEALTH_WINDOW_DURATION` seconds after sufficient failures.
 
-## Troubleshooting Guide (common issues & resolutions)
+## Simulating provider failures
+- Provider mock servers (in docker-compose) can be configured to return HTTP 500 for testing. Use their provided admin endpoints (if present) or modify mock to fail a percentage of requests.
+- Alternatively, patch the provider URL to a local mock that returns 500 for a period while running the burst above to force failures and drive health transitions.
 
-1. Redis connection failures
-- Symptom: "ConnectionRefusedError", app fails on startup
-- Fix:
-  - Ensure Redis is running: docker-compose up redis or check local service
-  - Verify REDIS_URL in `.env` matches the running redis (host/port)
-  - Confirm network (when running in docker-compose, app uses `redis` hostname)
+## Validating retry & dead-letter behavior
+- Retries use exponential backoff controlled in `src/retry_service.py` with `max_retries` default of 5.
+- To validate: make provider return intermittent 5xx responses; observe task retries, eventual dead-letter entry after exhausting retries (see `tests/test_dead_letter_queue.py`).
 
-2. TaskIQ workers not processing tasks
-- Symptom: Jobs remain in queue, no outbound requests
-- Fix:
-  - Start worker: python -m src.worker (or the project's provided worker entrypoint)
-  - Ensure TASKIQ_BROKER_URL points to Redis used by the app
-  - Check worker logs for exceptions
-  - Verify TaskIQ package compatibility and that broker startup completed
+## Debugging tips
+- Enable DEBUG logging:
+```bash
+export DEBUG=true
+```
+- Tail the application and worker logs in separate terminals.
+- Check Redis keys and TTLs to ensure rate-limit keys expire as expected.
+- Use tests with increased verbosity or focused `-k <keyword>` runs to reproduce failing scenarios quickly.
 
-3. 429 Too Many Requests (global rate limit)
-- Symptom: App returns HTTP 429 with details about current_count/limit
-- Fix:
-  - Reduce client request rate
-  - Increase TOTAL_RATE_LIMIT only if providers can sustain higher throughput
-  - Confirm counters are resetting after rate_limit_window (default 1s)
+## Core files to inspect (quick map)
+- `src/config.py` — central configuration values (window durations, thresholds)
+- `src/rate_limiter.py` — Redis-based per-provider & global rate limiting logic
+- `src/health_tracker.py` — sliding-window health calculations and failure aggregation
+- `src/distribution.py` — provider selection and weighted round-robin distribution
+- `src/tasks.py` — TaskIQ tasks: sending to providers, recording responses
+- `src/retry_service.py` — retry logic, exponential backoff, dead-letter handling
+- `src/queue.py` — FastAPI endpoints and request enqueueing
+- `src/worker.py` — TaskIQ worker runner
 
-4. Provider unreachable or timeouts
-- Symptom: Worker logs show timeouts, provider marked unhealthy
-- Fix:
-  - Verify provider URL (PROVIDER*_URL) is reachable (curl)
-  - Check provider service logs (Node mocks)
-  - Ensure provider health threshold & time window are appropriate
+## Acceptance criteria for reviewers
+- App starts with Docker Compose and responds at `/api/sms`.
+- Worker processes queued tasks and writes responses/requests to the DB (or logs).
+- Per-provider limits are enforced (use sliding-window test to verify).
+- Provider health transitions occur after repeated failures and are respected by distribution.
+- Targeted unit tests from `tests/` pass locally.
 
-5. Database locked or migration issues (SQLite)
-- Symptom: "database is locked" or Alembic migration errors
-- Fix:
-  - For development: stop other processes accessing SQLite file
-  - Re-run migrations: alembic upgrade head
-  - Consider using Postgres in multi-developer or production environments
+## CI / notes for reviewers
+- Most unit tests rely on mocks and do not require external services.
+- Integration tests that simulate Redis use in-memory stores; if a test requires a real Redis in your environment, prefer running it in the Docker Compose stack.
+- If tests fail locally, run the focused test with `-k` to inspect logs and underlying assertions.
 
-6. CORS / Browser issues when testing UI
-- Symptom: Browser blocks requests from web UI
-- Fix:
-  - App uses permissive CORS for development; check CORSMiddleware settings in `src/main.py`
+## Appendix — Common commands
+```bash
+# Start local stack
+docker-compose up --build
 
-7. Unexpected 500s in request handling
-- Symptom: 500 internal errors
-- Fix:
-  - Check app logs for stack traces
-  - Reproduce with curl to get detailed error
-  - Run unit tests (pytest) and investigate failing tests
+# Run app locally
+uvicorn "src.main:app" --reload --host 0.0.0.0 --port 8000
 
-## Operational notes
-- Use health endpoints and distribution-stats to monitor provider availability
-- For production, replace SQLite with a managed DB and secure Redis
-- Add metrics (Prometheus) for rate counters, queue depth, and task success/failure rates
+# Run worker
+python -m src.worker
 
-## Developer Checklist (per AGENTS.md)
-- Create/Update `.agents/plan.md` for feature work
-- Add small tasks to `.agents/work_list.md` and update statuses
-- Write unit tests for new logic and update `tests/` accordingly
-- Run pre-commit hooks (black, ruff, isort) before PRs
+# Run full test suite
+pytest -q
 
-## Acceptance Criteria (verification)
-- Developer can follow this guide to start the stack and run sample requests
-- API endpoints listed above are discoverable in /docs
-- Architecture overview maps to the code (src/)
-- Troubleshooting section resolves common developer problems
-
-## Contact & Notes
-For questions about the agent conventions and worklist, consult `AGENTS.md` and `.agents/work_list.md`.
+# Run focused health tracker test
+pytest tests/test_health_tracker.py::TestProviderHealthTracker -q
+```
