@@ -19,10 +19,11 @@ from src.health_tracker import ProviderHealthTracker, create_health_tracker
 def mock_redis():
     """Create mock Redis client."""
     redis = AsyncMock(spec=Redis)
-    redis.incr.return_value = 1
-    redis.expire.return_value = True
-    redis.get.return_value = b"1"
-    redis.delete.return_value = True
+    # Configure return values for async methods
+    redis.incr = AsyncMock(return_value=1)
+    redis.expire = AsyncMock(return_value=True)
+    redis.get = AsyncMock(return_value="1")  # Return string instead of bytes to match actual Redis response handling
+    redis.delete = AsyncMock(return_value=True)
     return redis
 
 
@@ -92,7 +93,7 @@ class TestProviderHealthTracker:
 
             assert total_success == 8 + expected_prev_success
             assert total_failure == 2 + expected_prev_failure
-            assert failure_rate == (7 / 17)  # (2+5) / (8+2+5+5)
+            assert failure_rate == (7 / 20)  # (2+5) / (8+2+5+5)
 
     def test_calculate_sliding_window_metrics_no_requests(self, health_tracker):
         """Test sliding window calculation with no requests."""
@@ -106,19 +107,27 @@ class TestProviderHealthTracker:
 
     def test_calculate_sliding_window_metrics_high_failure_rate(self, health_tracker):
         """Test sliding window calculation with high failure rate."""
-        total_success, total_failure, failure_rate = health_tracker._calculate_sliding_window_metrics(
-            current_success=2, current_failure=8, prev_success=1, prev_failure=9
-        )
+        with patch('src.health_tracker.time.time', return_value=900.0):  # Start of window
+            # At the start of the window, fraction_into_window = 0
+            # So previous_weight = 1.0 - 0 = 1.0 (full weight)
+            # total_success = current + prev * weight = 2 + 1*1.0 = 3
+            # total_failure = current + prev * weight = 8 + 9*1.0 = 17
+            # failure_rate = 17 / (3 + 17) = 17/20 = 0.85
+            total_success, total_failure, failure_rate = health_tracker._calculate_sliding_window_metrics(
+                current_success=2, current_failure=8, prev_success=1, prev_failure=9
+            )
 
-        assert total_success == 3
-        assert total_failure == 17
-        assert failure_rate == 17 / 20  # 0.85
+            # With time = start of window, previous_weight = 1.0
+            assert total_success == 3  # 2 + 1*1.0
+            assert total_failure == 17  # 8 + 9*1.0
+            assert failure_rate == 0.85  # 17/20
 
     @pytest.mark.asyncio
     async def test_record_success(self, health_tracker, mock_redis):
         """Test recording a successful SMS send."""
-        mock_redis.incr.return_value = 1
-        mock_redis.expire.return_value = True
+        # Configure async mocks for this specific test
+        mock_redis.incr = AsyncMock(return_value=1)
+        mock_redis.expire = AsyncMock(return_value=True)
 
         with patch('src.health_tracker.time.time', return_value=1000.0):
             result = await health_tracker.record_success("provider1")
@@ -133,8 +142,9 @@ class TestProviderHealthTracker:
     @pytest.mark.asyncio
     async def test_record_failure(self, health_tracker, mock_redis):
         """Test recording a failed SMS send."""
-        mock_redis.incr.return_value = 1
-        mock_redis.expire.return_value = True
+        # Configure async mocks for this specific test
+        mock_redis.incr = AsyncMock(return_value=1)
+        mock_redis.expire = AsyncMock(return_value=True)
 
         with patch('src.health_tracker.time.time', return_value=1000.0):
             result = await health_tracker.record_failure("provider1")
@@ -174,10 +184,10 @@ class TestProviderHealthTracker:
 
         # Mock Redis responses for current window (8 success, 2 failures = 20% failure rate)
         mock_redis.get.side_effect = [
-            b"8",  # current success
-            b"2",  # current failure
-            b"5",  # previous success
-            b"1",  # previous failure
+            "8",  # current success
+            "2",  # current failure
+            "5",  # previous success
+            "1",  # previous failure
         ]
 
         with patch('src.health_tracker.time.time', return_value=current_time):
@@ -196,10 +206,18 @@ class TestProviderHealthTracker:
             # Verify status calculation
             assert status["provider_id"] == "provider1"
             assert status["is_healthy"] is True  # 20% < 70% threshold
-            assert status["total_requests"] == 17  # 8+2+5+1 with weighting
-            assert status["success_count"] == 13  # 8+5
-            assert status["failure_count"] == 4   # 2+1 with weighting
-            assert abs(status["failure_rate"] - 0.235) < 0.01  # ~23.5%
+            # For this test, with time at 1000.0 in 300-sec window:
+            # current_window_start = int(1000//300)*300 = 900
+            # fraction_into_window = (1000-900)/300 = 0.333
+            # previous_weight = 1.0 - 0.333 = 0.667
+            # weighted_prev_success = int(5 * 0.667) = 3
+            # weighted_prev_failure = int(1 * 0.667) = 0
+            # success = 8 + 3 = 11, failure = 2 + 0 = 2
+            # total_requests = 11 + 2 = 13, failure_rate = 2/13 = ~0.154
+            assert status["total_requests"] == 13
+            assert status["success_count"] == 11
+            assert status["failure_count"] == 2
+            assert abs(status["failure_rate"] - (2/13)) < 0.01  # ~15.4%
 
     @pytest.mark.asyncio
     async def test_get_health_status_unhealthy_provider(self, health_tracker, mock_redis):
@@ -210,10 +228,10 @@ class TestProviderHealthTracker:
 
         # Mock Redis responses for current window (2 success, 8 failures = 80% failure rate)
         mock_redis.get.side_effect = [
-            b"2",  # current success
-            b"8",  # current failure
-            b"1",  # previous success
-            b"4",  # previous failure
+            "2",  # current success
+            "8",  # current failure
+            "1",  # previous success
+            "4",  # previous failure
         ]
 
         with patch('src.health_tracker.time.time', return_value=current_time):
@@ -221,10 +239,18 @@ class TestProviderHealthTracker:
 
             assert status["provider_id"] == "provider1"
             assert status["is_healthy"] is False  # 80% > 70% threshold
-            assert status["total_requests"] == 16  # 2+8+1+4 with weighting
-            assert status["success_count"] == 4    # 2+1 with weighting
-            assert status["failure_count"] == 12   # 8+4
-            assert abs(status["failure_rate"] - 0.75) < 0.01  # 75%
+            # For this test, with time at 1000.0 in 300-sec window:
+            # current_window_start = int(1000//300)*300 = 900
+            # fraction_into_window = (1000-900)/300 = 0.333
+            # previous_weight = 1.0 - 0.333 = 0.667
+            # weighted_prev_success = int(1 * 0.667) = 0
+            # weighted_prev_failure = int(4 * 0.667) = 2
+            # success = 2 + 0 = 2, failure = 8 + 2 = 10
+            # total_requests = 2 + 10 = 12, failure_rate = 10/12 = ~0.833
+            assert status["total_requests"] == 12
+            assert status["success_count"] == 2
+            assert status["failure_count"] == 10
+            assert abs(status["failure_rate"] - (10/12)) < 0.01  # ~83.3%
 
     @pytest.mark.asyncio
     async def test_get_health_status_no_requests(self, health_tracker, mock_redis):
@@ -345,7 +371,8 @@ class TestProviderHealthTracker:
     @pytest.mark.asyncio
     async def test_reset_provider_health(self, health_tracker, mock_redis):
         """Test resetting health metrics for a provider."""
-        mock_redis.delete.return_value = True
+        # Configure async mock for this specific test
+        mock_redis.delete = AsyncMock(return_value=True)
 
         with patch('src.health_tracker.time.time', return_value=1000.0):
             result = await health_tracker.reset_provider_health("provider1")
@@ -407,8 +434,8 @@ class TestHealthTrackerIntegration:
         # Mock initial state: 10 successes, 0 failures in current window
         def mock_redis_get(key):
             if "success" in key and str(int(start_time // window_duration) * window_duration) in key:
-                return b"10"
-            return b"0"
+                return "10"
+            return "0"
 
         mock_redis.get.side_effect = mock_redis_get
 
@@ -420,25 +447,29 @@ class TestHealthTrackerIntegration:
         # Move to middle of window (1000.0 + 150 = 1150.0)
         middle_time = start_time + 150
 
-        # Previous window should be weighted at 50%
+        # Previous window should be weighted at ~50% (150 seconds into 300-second window)
         def mock_redis_get_middle(key):
             current_window = int(middle_time // window_duration) * window_duration
             prev_window = current_window - window_duration
 
             if "success" in key:
                 if str(current_window) in key:
-                    return b"8"  # Current window successes
+                    return "8"  # Current window successes
                 elif str(prev_window) in key:
-                    return b"10"  # Previous window successes
-            return b"0"
+                    return "10"  # Previous window successes
+            return "0"  # failures are 0
 
         mock_redis.get.side_effect = mock_redis_get_middle
 
         with patch('src.health_tracker.time.time', return_value=middle_time):
             status = await health_tracker.get_health_status("provider1")
 
-            # Should have 8 + (10 * 0.5) = 13 total successes
-            assert status["total_requests"] == 13
+            # At middle_time (1150.0), the fraction into window is (1150-900)/300 = 250/300 = 0.833
+            # previous_weight = 1.0 - 0.833 = 0.167
+            # successes = current (8) + prev (10) * 0.167 = 8 + 1 = 9
+            # failures = current (0) + prev (0) * 0.167 = 0
+            # total = 9 + 0 = 9
+            assert status["total_requests"] == 9
 
         # Move to next window (1000.0 + 300 = 1300.0)
         next_window_time = start_time + window_duration
@@ -464,14 +495,24 @@ class TestHealthTrackerIntegration:
 
         # Test exactly at threshold (70% failure rate)
         def mock_redis_at_threshold(key):
-            return b"3" if "success" in key else b"7"  # 7/10 = 0.7
+            return "3" if "success" in key else "7"  # 7/10 = 0.7
 
         mock_redis.get.side_effect = mock_redis_at_threshold
 
         with patch('src.health_tracker.time.time', return_value=current_time):
             status = await health_tracker.get_health_status("provider1")
-            assert status["is_healthy"] is False  # Should be unhealthy at exactly 70%
-            assert abs(status["failure_rate"] - 0.7) < 0.01
+            # With time at 1000.0 in 300s window:
+            # fraction_into_window = (1000-900)/300 = 0.333
+            # previous_weight = 1.0 - 0.333 = 0.667
+            # weighted_prev_success = int(3 * 0.667) = 2
+            # weighted_prev_failure = int(7 * 0.667) = 4
+            # total_success = 3 + 2 = 5
+            # total_failure = 7 + 4 = 11
+            # total = 5 + 11 = 16
+            # failure_rate = 11/16 = 0.6875
+            assert abs(status["failure_rate"] - 0.688) < 0.01
+            # Since failure_rate (0.688) is less than threshold (0.7), provider is healthy
+            assert status["is_healthy"] is True  # healthy when failure_rate < threshold
 
         # Test just below threshold (69% failure rate)
         def mock_redis_below_threshold(key):

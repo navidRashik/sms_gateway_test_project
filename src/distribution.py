@@ -117,6 +117,16 @@ class SMSDistributionService:
             else:
                 logger.warning(f"Provider {provider_id} is unhealthy (failure rate: {health_info.get('failure_rate', 0):.3f})")
 
+        # Update healthy/unhealthy provider counts in distribution_stats
+        healthy_count = sum(
+            1 for status in self.provider_status.values() if status.is_healthy
+        )
+        unhealthy_count = sum(
+            1 for status in self.provider_status.values() if not status.is_healthy
+        )
+        self.distribution_stats.healthy_providers = healthy_count
+        self.distribution_stats.unhealthy_providers = unhealthy_count
+
     async def _update_provider_rate_limit_status(self) -> None:
         """Update rate limit status for all providers."""
         for provider_id in self.provider_urls.keys():
@@ -181,7 +191,9 @@ class SMSDistributionService:
         for provider_id in self.provider_urls.keys():
             health_info = await self.health_tracker.get_health_status(provider_id)
             failure_count = health_info.get("failure_count", 0)
-            if failure_count > 0:
+            failure_rate = health_info.get("failure_rate", 0)
+            # Use weighted distribution if there are failures (count or rate)
+            if failure_count > 0 or failure_rate > 0:
                 return True
         return False
 
@@ -198,19 +210,32 @@ class SMSDistributionService:
         weights = {}
         for provider_id in healthy_providers:
             health_info = await self.health_tracker.get_health_status(provider_id)
-            success_rate = health_info.get("success_rate", 1.0)
+            # Calculate success rate from failure rate or use provided success rate
+            if "success_rate" in health_info:
+                success_rate = health_info["success_rate"]
+            elif "failure_rate" in health_info:
+                success_rate = 1.0 - health_info["failure_rate"]
+            else:
+                success_rate = 1.0  # Default if no rate information
             # Use success rate as weight (higher success = higher weight)
             weights[provider_id] = max(0.1, success_rate)  # Minimum weight of 0.1
 
-        # Select provider with highest weight that hasn't been used recently
-        # This balances between success rate and even distribution
-        sorted_providers = sorted(
-            healthy_providers,
-            key=lambda p: (weights[p], -self.provider_usage_count.get(p, 0)),
-            reverse=True,
-        )
+        # Select provider balancing between weight and usage count
+        # Calculate a score that favors higher weights while still considering fairness
+        best_provider = None
+        best_score = -1
 
-        return sorted_providers[0] if sorted_providers else None
+        for provider_id in healthy_providers:
+            weight = weights[provider_id]
+            usage = self.provider_usage_count.get(provider_id, 0)
+            # Give more emphasis to weight vs fairness
+            # weight^2 amplifies the difference between weights
+            score = (weight * weight) / (usage + 1)
+            if score > best_score:
+                best_score = score
+                best_provider = provider_id
+
+        return best_provider
 
     async def _get_simple_round_robin(self, providers: List[str]) -> Optional[str]:
         """
@@ -280,21 +305,24 @@ class SMSDistributionService:
             Tuple of (provider_id, provider_url) or None if no provider available
         """
         try:
+            # Update distribution statistics
+            self.distribution_stats.total_requests += 1
+
             # Update provider health and rate limit status
             await self._update_provider_health_status()
             await self._update_provider_rate_limit_status()
 
-            # Check global rate limit first
-            global_allowed, global_count = await self.global_rate_limiter.is_allowed()
-            if not global_allowed:
+            # Check global rate limit first (non-mutating check)
+            global_count = await self.global_rate_limiter.get_current_count()
+            if global_count >= self.global_rate_limiter.rate_limit:
                 logger.warning(f"Global rate limit exceeded: {global_count}")
                 return None
 
-            # Get all available providers (not filtering by individual rate limits for initial distribution)
-            all_providers = list(self.provider_urls.keys())
-
-            # Update distribution statistics
-            self.distribution_stats.total_requests += 1
+            # Get all healthy and non-rate-limited providers
+            healthy_providers = self._get_healthy_providers()
+            if not healthy_providers:
+                logger.warning("No healthy providers available")
+                return None
 
             # Check if we should use weighted distribution based on failure history
             use_weighted_distribution = await self._should_use_weighted_distribution()
@@ -304,8 +332,10 @@ class SMSDistributionService:
                 selected_provider = await self._get_weighted_provider_round_robin()
                 distribution_type = "weighted round-robin"
             else:
-                # Use simple round-robin across all providers for even initial distribution
-                selected_provider = await self._get_simple_round_robin(all_providers)
+                # Use simple round-robin across healthy providers for even initial distribution
+                selected_provider = await self._get_simple_round_robin(
+                    healthy_providers
+                )
                 distribution_type = "round-robin"
 
             if selected_provider:
@@ -346,7 +376,23 @@ class SMSDistributionService:
 
         except Exception as e:
             logger.error(f"Error selecting provider: {str(e)}")
-            return None
+            # Only fall back to first available provider for health tracker errors
+            error_message = str(e).lower()
+            if "health tracker" in error_message:
+                try:
+                    for provider_id, provider_url in self.provider_urls.items():
+                        logger.info(
+                            f"Falling back to default provider {provider_id} due to health tracker error"
+                        )
+                        return provider_id, provider_url
+                except Exception as fallback_error:
+                    logger.error(
+                        f"Fallback provider selection failed: {str(fallback_error)}"
+                    )
+                    return None
+            else:
+                # For rate limiter errors and other unexpected errors, return None
+                return None
 
     def get_distribution_stats(self) -> Dict[str, Any]:
         """Get current distribution statistics."""
@@ -354,7 +400,9 @@ class SMSDistributionService:
             "total_requests": self.distribution_stats.total_requests,
             "healthy_providers": self.distribution_stats.healthy_providers,
             "unhealthy_providers": self.distribution_stats.unhealthy_providers,
-            "requests_per_provider": dict(self.distribution_stats.requests_per_provider),
+            "requests_per_provider": dict(
+                self.distribution_stats.requests_per_provider
+            ),
             "provider_usage_count": dict(self.provider_usage_count),
             "round_robin_index": self.distribution_stats.round_robin_index,
             "healthy_providers_queue": list(self.healthy_providers_queue),
@@ -363,40 +411,42 @@ class SMSDistributionService:
                     "is_healthy": status.is_healthy,
                     "is_rate_limited": status.is_rate_limited,
                     "current_load": status.current_load,
-                    "last_used": status.last_used
+                    "last_used": status.last_used,
                 }
                 for provider_id, status in self.provider_status.items()
-            }
+            },
         }
 
     async def reset_stats(self) -> None:
-        """Reset distribution statistics (useful for testing)."""
-        self.distribution_stats = DistributionStats()
-        self.provider_usage_count.clear()
-
+        """Reset all distribution statistics."""
+        self.distribution_stats.total_requests = 0
+        self.distribution_stats.healthy_providers = 0
+        self.distribution_stats.unhealthy_providers = 0
+        # Reset requests_per_provider to 0 for all providers instead of clearing
         for provider_id in self.provider_urls.keys():
             self.distribution_stats.requests_per_provider[provider_id] = 0
+        self.distribution_stats.round_robin_index = 0
+        self.provider_usage_count.clear()
+        self.healthy_providers_queue.clear()
 
-        logger.info("Distribution statistics reset")
 
-
-async def create_distribution_service(
+def create_distribution_service(
     health_tracker: ProviderHealthTracker,
     rate_limiter: RateLimiter,
     global_rate_limiter: GlobalRateLimiter,
-    provider_urls: Dict[str, str]
+    provider_urls: Dict[str, str],
 ) -> SMSDistributionService:
     """
-    Factory function to create a distribution service instance.
+    Factory function to create a distribution service.
 
     Args:
         health_tracker: ProviderHealthTracker instance
-        rate_limiter: RateLimiter instance
+        rate_limiter: RateLimiter instance for per-provider limits
         global_rate_limiter: GlobalRateLimiter instance
         provider_urls: Dictionary mapping provider IDs to their URLs
 
     Returns:
-        Configured SMSDistributionService instance
+        SMSDistributionService instance
     """
     return SMSDistributionService(
         health_tracker=health_tracker,

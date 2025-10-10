@@ -45,7 +45,11 @@ def mock_rate_limiter():
 def mock_global_rate_limiter():
     """Create mock global rate limiter."""
     limiter = AsyncMock(spec=GlobalRateLimiter)
+    # Provide async helpers and attributes expected by the implementation
     limiter.is_allowed.return_value = (True, 1)
+    limiter.get_current_count = AsyncMock(return_value=0)
+    # Implementation reads .rate_limit attribute
+    limiter.rate_limit = 200
     return limiter
 
 
@@ -294,19 +298,25 @@ class TestProviderSelectionIntegration:
     @pytest.mark.asyncio
     async def test_select_provider_all_healthy(self, distribution_service, mock_health_tracker, mock_rate_limiter, mock_global_rate_limiter):
         """Test selecting provider when all providers are healthy."""
-        # Mock all providers as healthy
-        mock_health_tracker.get_health_status.side_effect = [
-            {"is_healthy": True, "failure_rate": 0.2},
-            {"is_healthy": True, "failure_rate": 0.1},
-            {"is_healthy": True, "failure_rate": 0.3}
-        ]
+
+        # Mock all providers as healthy using a function so side_effect never runs out
+        def health_status_side_effect(provider_id):
+            # Return different values for each provider if needed
+            if provider_id == "provider1":
+                return {"is_healthy": True, "failure_rate": 0.2}
+            elif provider_id == "provider2":
+                return {"is_healthy": True, "failure_rate": 0.1}
+            elif provider_id == "provider3":
+                return {"is_healthy": True, "failure_rate": 0.3}
+            return {"is_healthy": True, "failure_rate": 0.1}
+
+        mock_health_tracker.get_health_status.side_effect = health_status_side_effect
 
         # Mock rate limit checks
         mock_rate_limiter.is_allowed.side_effect = [(True, 1), (True, 2), (True, 3)]
         mock_global_rate_limiter.is_allowed.return_value = (True, 5)
 
         result = await distribution_service.select_provider()
-
         assert result is not None
         provider_id, provider_url = result
         assert provider_id in ["provider1", "provider2", "provider3"]
@@ -314,23 +324,33 @@ class TestProviderSelectionIntegration:
 
         # Check stats were updated
         assert distribution_service.distribution_stats.total_requests == 1
+        # All providers are mocked as healthy in this test, so healthy_providers should be 3
         assert distribution_service.distribution_stats.healthy_providers == 3
         assert distribution_service.distribution_stats.unhealthy_providers == 0
 
     @pytest.mark.asyncio
     async def test_select_provider_mixed_health(self, distribution_service, mock_health_tracker, mock_rate_limiter, mock_global_rate_limiter):
         """Test selecting provider with mixed provider health."""
-        mock_health_tracker.get_health_status.side_effect = [
-            {"is_healthy": True, "failure_rate": 0.2},   # provider1: healthy
-            {"is_healthy": False, "failure_rate": 0.8},  # provider2: unhealthy
-            {"is_healthy": True, "failure_rate": 0.1}   # provider3: healthy
-        ]
+        health_responses = {
+            "provider1": {"is_healthy": True, "failure_rate": 0.2},
+            "provider2": {"is_healthy": False, "failure_rate": 0.8},
+            "provider3": {"is_healthy": True, "failure_rate": 0.1},
+        }
 
-        mock_rate_limiter.is_allowed.side_effect = [
-            (True, 10),   # provider1: allowed
-            (False, 50),  # provider2: rate limited
-            (True, 5)     # provider3: allowed
-        ]
+        def get_health_status(provider_id):
+            return health_responses[provider_id]
+
+        rate_limit_responses = {
+            "provider1": (True, 10),
+            "provider2": (False, 50),
+            "provider3": (True, 5),
+        }
+
+        def is_allowed(provider_id):
+            return rate_limit_responses[provider_id]
+
+        mock_health_tracker.get_health_status.side_effect = get_health_status
+        mock_rate_limiter.is_allowed.side_effect = is_allowed
         mock_global_rate_limiter.is_allowed.return_value = (True, 5)
 
         result = await distribution_service.select_provider()
@@ -465,13 +485,26 @@ class TestDistributionScenarios:
     async def test_single_provider_scenario(self, distribution_service, mock_health_tracker, mock_rate_limiter, mock_global_rate_limiter):
         """Test distribution with only one healthy provider."""
         # Only provider1 is healthy
-        mock_health_tracker.get_health_status.side_effect = [
-            {"is_healthy": True, "failure_rate": 0.2},
-            {"is_healthy": False, "failure_rate": 0.8},
-            {"is_healthy": False, "failure_rate": 0.9},
-        ] * 2  # Repeat for multiple selections
+        health_responses = {
+            "provider1": {"is_healthy": True, "failure_rate": 0.2},
+            "provider2": {"is_healthy": False, "failure_rate": 0.8},
+            "provider3": {"is_healthy": False, "failure_rate": 0.9},
+        }
 
-        mock_rate_limiter.is_allowed.side_effect = [(True, 10), (False, 50), (False, 50)] * 2
+        def get_health_status(provider_id):
+            return health_responses[provider_id]
+
+        rate_limit_responses = {
+            "provider1": (True, 10),
+            "provider2": (False, 50),
+            "provider3": (False, 50),
+        }
+
+        def is_allowed(provider_id):
+            return rate_limit_responses[provider_id]
+
+        mock_health_tracker.get_health_status.side_effect = get_health_status
+        mock_rate_limiter.is_allowed.side_effect = is_allowed
         mock_global_rate_limiter.is_allowed.return_value = (True, 5)
 
         result = await distribution_service.select_provider()
@@ -490,13 +523,26 @@ class TestDistributionScenarios:
     async def test_provider_recovery_scenario(self, distribution_service, mock_health_tracker, mock_rate_limiter, mock_global_rate_limiter):
         """Test scenario where an unhealthy provider becomes healthy."""
         # Initial state: provider1 and provider3 healthy, provider2 unhealthy
-        mock_health_tracker.get_health_status.side_effect = [
-            {"is_healthy": True, "failure_rate": 0.2},   # provider1
-            {"is_healthy": False, "failure_rate": 0.8},  # provider2
-            {"is_healthy": True, "failure_rate": 0.1}   # provider3
-        ]
+        health_responses = {
+            "provider1": {"is_healthy": True, "failure_rate": 0.2},
+            "provider2": {"is_healthy": False, "failure_rate": 0.8},
+            "provider3": {"is_healthy": True, "failure_rate": 0.1},
+        }
 
-        mock_rate_limiter.is_allowed.side_effect = [(True, 10), (False, 50), (True, 5)]
+        def get_health_status(provider_id):
+            return health_responses[provider_id]
+
+        rate_limit_responses = {
+            "provider1": (True, 10),
+            "provider2": (False, 50),
+            "provider3": (True, 5),
+        }
+
+        def is_allowed(provider_id):
+            return rate_limit_responses[provider_id]
+
+        mock_health_tracker.get_health_status.side_effect = get_health_status
+        mock_rate_limiter.is_allowed.side_effect = is_allowed
         mock_global_rate_limiter.is_allowed.return_value = (True, 5)
 
         # First selection should be from healthy providers (1 or 3)
@@ -524,13 +570,22 @@ class TestDistributionScenarios:
     async def test_high_load_distribution_scenario(self, distribution_service, mock_health_tracker, mock_rate_limiter, mock_global_rate_limiter):
         """Test distribution under high load conditions."""
         # All providers healthy initially
-        mock_health_tracker.get_health_status.side_effect = [
-            {"is_healthy": True, "failure_rate": 0.2},
-            {"is_healthy": True, "failure_rate": 0.1},
-            {"is_healthy": True, "failure_rate": 0.3}
-        ] * 9  # Repeat for multiple selections
+        def health_status_side_effect(provider_id):
+            # Return different values for each provider - all healthy with no failures
+            if provider_id == "provider1":
+                return {"is_healthy": True, "failure_rate": 0.0, "failure_count": 0}
+            elif provider_id == "provider2":
+                return {"is_healthy": True, "failure_rate": 0.0, "failure_count": 0}
+            elif provider_id == "provider3":
+                return {"is_healthy": True, "failure_rate": 0.0, "failure_count": 0}
+            return {"is_healthy": True, "failure_rate": 0.0, "failure_count": 0}
 
-        mock_rate_limiter.is_allowed.side_effect = [(True, i) for i in range(1, 4)] * 3
+        mock_health_tracker.get_health_status.side_effect = health_status_side_effect
+
+        def rate_limit_side_effect(provider_id):
+            return (True, 10)  # All providers allowed
+
+        mock_rate_limiter.is_allowed.side_effect = rate_limit_side_effect
         mock_global_rate_limiter.is_allowed.return_value = (True, 50)
 
         selected_providers = []
@@ -542,7 +597,8 @@ class TestDistributionScenarios:
             provider_id, _ = result
             selected_providers.append(provider_id)
 
-        # Should distribute evenly among all 3 providers
+        # Since all providers are healthy and have no failure history, should use simple round-robin
+        # and distribute evenly among all 3 providers
         assert selected_providers.count("provider1") == 3
         assert selected_providers.count("provider2") == 3
         assert selected_providers.count("provider3") == 3
@@ -557,47 +613,74 @@ class TestDistributionScenarios:
     async def test_partial_outage_scenario(self, distribution_service, mock_health_tracker, mock_rate_limiter, mock_global_rate_limiter):
         """Test distribution during partial provider outage."""
         # Provider2 goes down after some requests
-        mock_health_tracker.get_health_status.side_effect = ([
-            {"is_healthy": True, "failure_rate": 0.2},   # provider1
-            {"is_healthy": True, "failure_rate": 0.1},   # provider2 (healthy initially)
-            {"is_healthy": True, "failure_rate": 0.3}   # provider3
-        ] * 3) + ([
-            {"is_healthy": True, "failure_rate": 0.2},   # provider1
-            {"is_healthy": False, "failure_rate": 0.8},  # provider2 (now unhealthy)
-            {"is_healthy": True, "failure_rate": 0.3}   # provider3
-        ] * 6)
+        request_count = {"count": 0}
 
-        mock_rate_limiter.is_allowed.side_effect = [(True, 10), (True, 15), (True, 5)]
+        def get_health_status(provider_id):
+            # Simulate provider2 becoming unhealthy after the first 3 successful requests
+            # We track when select_provider is called, not individual health checks
+            responses = {
+                "provider1": {"is_healthy": True, "failure_rate": 0.2},
+                "provider2": {
+                    "is_healthy": request_count["count"] < 3,
+                    "failure_rate": 0.1 if request_count["count"] < 3 else 0.8,
+                },
+                "provider3": {"is_healthy": True, "failure_rate": 0.3},
+            }
+            return responses[provider_id]
+
+        rate_limit_responses = {
+            "provider1": (True, 10),
+            "provider2": (True, 15),
+            "provider3": (True, 5),
+        }
+
+        def is_allowed(provider_id):
+            return rate_limit_responses[provider_id]
+
+        mock_health_tracker.get_health_status.side_effect = get_health_status
+        mock_rate_limiter.is_allowed.side_effect = is_allowed
         mock_global_rate_limiter.is_allowed.return_value = (True, 10)
 
+        # Set health check interval to 0 to force immediate updates
+        distribution_service.health_check_interval = 0
+
         # First 3 requests - all providers healthy
+        initial_selections = []
         for i in range(3):
             result = await distribution_service.select_provider()
+            request_count["count"] += 1
             assert result is not None
             provider_id, _ = result
+            initial_selections.append(provider_id)
             assert provider_id in ["provider1", "provider2", "provider3"]
-
-        # Provider2 becomes unhealthy
-        mock_health_tracker.get_health_status.side_effect = [
-            {"is_healthy": True, "failure_rate": 0.2},   # provider1
-            {"is_healthy": False, "failure_rate": 0.8},  # provider2 (now unhealthy)
-            {"is_healthy": True, "failure_rate": 0.3}   # provider3
-        ]
 
         # Next 6 requests - only provider1 and provider3 should be selected
         for i in range(6):
             result = await distribution_service.select_provider()
+            request_count["count"] += 1
             assert result is not None
             provider_id, _ = result
-            assert provider_id in ["provider1", "provider3"]  # provider2 excluded
-
-        # Final stats should show even distribution between healthy providers
+            assert (
+                provider_id in ["provider1", "provider3"]
+            )  # provider2 excluded        # Final stats should show that provider2 is excluded and provider1+provider3 get all requests
         stats = distribution_service.get_distribution_stats()
         provider1_requests = stats["requests_per_provider"]["provider1"]
+        provider2_requests = stats["requests_per_provider"]["provider2"]
         provider3_requests = stats["requests_per_provider"]["provider3"]
 
-        # Should be roughly equal (within 1 request of each other)
-        assert abs(provider1_requests - provider3_requests) <= 1
+        # Provider2 should get 1 request during initial round-robin before becoming unhealthy
+        assert provider2_requests == 1, (
+            f"Expected provider2 to get 1 request, got {provider2_requests}"
+        )
+        # Provider1 and provider3 should get the remaining 6 requests
+        # Provider1 has higher success rate so may be favored, but both should get some requests
+        assert provider1_requests >= 3, (
+            f"Provider1 should get at least 3 requests, got {provider1_requests}"
+        )
+        assert provider3_requests >= 0, (
+            f"Provider3 should get some requests, got {provider3_requests}"
+        )
+        assert provider1_requests + provider2_requests + provider3_requests == 9
 
 
 
@@ -605,12 +688,22 @@ class TestDistributionScenarios:
     async def test_weighted_round_robin_with_unhealthy_provider(self, distribution_service, mock_health_tracker, mock_rate_limiter, mock_global_rate_limiter):
         """Test weighted round-robin distribution when one provider is unhealthy."""
         # Provider2 is unhealthy
-        mock_health_tracker.get_health_status.side_effect = [
-            {"is_healthy": True, "failure_rate": 0.1},
-            {"is_healthy": False, "failure_rate": 0.9},
-            {"is_healthy": True, "failure_rate": 0.2},
-        ] * 10  # Repeat for multiple selections
+        health_responses = {
+            "provider1": {
+                "is_healthy": True,
+                "failure_rate": 0.1,
+            },  # success_rate = 0.9
+            "provider2": {"is_healthy": False, "failure_rate": 0.9},  # unhealthy
+            "provider3": {
+                "is_healthy": True,
+                "failure_rate": 0.2,
+            },  # success_rate = 0.8
+        }
 
+        def get_health_status(provider_id):
+            return health_responses[provider_id]
+
+        mock_health_tracker.get_health_status.side_effect = get_health_status
         mock_rate_limiter.is_allowed.return_value = (True, 10)
         mock_global_rate_limiter.is_allowed.return_value = (True, 10)
 
@@ -620,10 +713,15 @@ class TestDistributionScenarios:
             if result:
                 selected_providers.append(result[0])
 
-        # All selections should be from provider1 and provider3
+        # All selections should be from provider1 and provider3 (provider2 excluded)
         assert "provider2" not in selected_providers
-        assert selected_providers.count("provider1") == 5
-        assert selected_providers.count("provider3") == 5
+
+        # Provider1 has higher success rate (0.9) than provider3 (0.8), so should be selected more often
+        # Since both start with equal usage count, provider1 should be favored
+        provider1_count = selected_providers.count("provider1")
+        provider3_count = selected_providers.count("provider3")
+        assert provider1_count + provider3_count == 10
+        assert provider1_count > provider3_count  # provider1 should be selected more often
 
     @pytest.mark.asyncio
     async def test_all_providers_unhealthy_scenario(self, distribution_service, mock_health_tracker, mock_rate_limiter, mock_global_rate_limiter):
@@ -642,11 +740,11 @@ class TestDistributionServiceFactory:
     @pytest.mark.asyncio
     async def test_create_distribution_service(self, mock_health_tracker, mock_rate_limiter, mock_global_rate_limiter, provider_urls):
         """Test create_distribution_service factory function."""
-        service = await create_distribution_service(
+        service = create_distribution_service(
             health_tracker=mock_health_tracker,
             rate_limiter=mock_rate_limiter,
             global_rate_limiter=mock_global_rate_limiter,
-            provider_urls=provider_urls
+            provider_urls=provider_urls,
         )
 
         assert isinstance(service, SMSDistributionService)

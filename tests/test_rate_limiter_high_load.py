@@ -290,5 +290,3 @@ class TestSlidingWindowAccuracy:
         unique_keys = set(incr_history)
         assert len(unique_keys) >= 2, \
             "Expected multiple time windows to be used, got keys: {unique_keys}"
-
-        await redis_client.close()

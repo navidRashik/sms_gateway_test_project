@@ -3,32 +3,35 @@
 ## 3rd party apis list
 - we have following apis for diffrent sms providers:
 
-    ```curl --location 'http://localhost:8071/api/sms/provider1' \
+    ```bash
+    curl --location 'http://localhost:8071/api/sms/provider1' \
+      --header 'Content-Type: application/json' \
+      --data '{
+        "phone": "01921317475",
+        "text": "klsfjdk"
+      }'
+    ```
+    ```bash
+    curl --location 'http://localhost:8072/api/sms/provider2' \
+      --header 'Content-Type: application/json' \
+      --data '{
+        "phone": "01921317475",
+        "text": "klsfjdk"
+      }'
+    ```
+    ```bash
+    curl --location 'http://localhost:8073/api/sms/provider3' \
+      --header 'Content-Type: application/json' \
+      --data '{
+        "phone": "01921317475",
+        "text": "klsfjdk"
+      }'
+    ```
 
---header 'Content-Type: application/json' \
---data '{
-    "phone": "01921317475",
-    "text": "klsfjdk"
-}'
-```
-```curl --location 'http://localhost:8072/api/sms/provider2' \
-
---header 'Content-Type: application/json' \
---data '{
-    "phone": "01921317475",
-    "text": "klsfjdk"
-}'
-```
-```curl --location 'http://localhost:8073/api/sms/provider3' \
-
---header 'Content-Type: application/json' \
---data '{
-    "phone": "01921317475",
-    "text": "klsfjdk"
-}'
-```
 - in all these 3rd party apis we have a rate limit of 50rps.
-- you can assume that all these 3rd party apis are running locally on port 8071. and you don't need to mock them. they are already running.
+- NOTE: the providers run on distinct ports: 8071, 8072 and 8073 (not all on 8071).
+  - When running locally (outside docker-compose) use the localhost examples above.
+  - When running via docker-compose, other services should call providers by service name (for example: http://provider1:8071/api/sms/provider1) because Docker Compose provides internal DNS for service hostnames.
 
 # requirements
 - we need to be able to serve 200 rps so lets queue up the requests first and then send them to the 3rd party apis to fullfill the 200rps requirement.

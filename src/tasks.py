@@ -429,58 +429,6 @@ async def send_sms_to_provider(
         }
 
 
-@broker.task
-async def process_sms_batch(
-    batch_data: Dict[str, Any],
-    provider_url: str,
-    provider_id: str
-) -> Dict[str, Any]:
-    """
-    Process a batch of SMS messages for a provider.
-
-    Args:
-        batch_data: Dictionary containing batch information
-        provider_url: Provider URL
-        provider_id: Provider identifier
-
-    Returns:
-        Dictionary with batch processing results
-    """
-    messages = batch_data.get("messages", [])
-    batch_id = batch_data.get("batch_id", "unknown")
-
-    logger.info(f"Processing SMS batch {batch_id} for {provider_id} with {len(messages)} messages")
-
-    results = []
-    successful = 0
-    failed = 0
-
-    for message in messages:
-        result = await send_sms_to_provider.kicker(
-            provider_url=provider_url,
-            phone=message["phone"],
-            text=message["text"],
-            message_id=message["message_id"],
-            provider_id=provider_id
-        )
-
-        results.append(result)
-
-        if result["success"]:
-            successful += 1
-        else:
-            failed += 1
-
-    logger.info(f"Batch {batch_id} completed: {successful} success, {failed} failed")
-
-    return {
-        "batch_id": batch_id,
-        "provider": provider_id,
-        "total_messages": len(messages),
-        "successful": successful,
-        "failed": failed,
-        "results": results
-    }
 
 
 async def get_available_providers() -> Dict[str, str]:
@@ -574,7 +522,8 @@ async def dispatch_sms(
         global_rate_limiter = await create_global_rate_limiter(redis_client)
         health_tracker = await create_health_tracker(redis_client)
         provider_urls = await get_available_providers()
-        distribution_service = await create_distribution_service(
+        # create_distribution_service is synchronous; call directly (not awaitable)
+        distribution_service = create_distribution_service(
             health_tracker=health_tracker,
             rate_limiter=rate_limiter,
             global_rate_limiter=global_rate_limiter,

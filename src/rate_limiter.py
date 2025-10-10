@@ -12,6 +12,8 @@ from typing import Optional, Tuple
 from redis.asyncio import Redis
 from redis.exceptions import ConnectionError, TimeoutError, RedisError
 
+from .utils import parse_redis_int
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -98,7 +100,7 @@ class RateLimiter:
         key = self._get_key(provider_id)
         try:
             count = await self.redis.get(key)
-            return int(count) if count else 0
+            return parse_redis_int(count)
         except (RedisError, ConnectionError, TimeoutError) as e:
             logger.error(f"Error getting current count for {provider_id}: {str(e)}")
             return 0
@@ -133,7 +135,7 @@ class RateLimiter:
         try:
             key = self._get_key(provider_id)
             current_count = await self.redis.get(key)
-            current_count = int(current_count) if current_count else 0
+            current_count = parse_redis_int(current_count)
 
             # Calculate remaining requests in current window
             remaining = max(0, self.rate_limit - current_count)
@@ -252,7 +254,7 @@ class GlobalRateLimiter:
         """
         key = self._get_key()
         count = await self.redis.get(key)
-        return int(count) if count else 0
+        return parse_redis_int(count)
 
 
 async def create_rate_limiter(redis_client: Redis) -> RateLimiter:

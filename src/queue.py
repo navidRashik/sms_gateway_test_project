@@ -101,7 +101,8 @@ async def get_distribution_service(
         "provider3": settings.provider3_url,
     }
 
-    return await create_distribution_service(
+    # create_distribution_service is synchronous - do not await it
+    return create_distribution_service(
         health_tracker=health_tracker,
         rate_limiter=rate_limiter,
         global_rate_limiter=global_rate_limiter,

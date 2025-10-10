@@ -1,5 +1,4 @@
-# Twillow SMS Gateway Docker Compose configuration
-# Uses uv for faster dependency installation in Python services
+version: "3.8"
 
 services:
   # Redis for queueing and rate limiting
@@ -26,6 +25,8 @@ services:
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=sqlite:///./data/sms_gateway.db  # Updated path to use data directory
+      # Inside docker-compose, use service hostnames (provider1/provider2/provider3).
+      # From the host machine use http://localhost:8071,8072,8073 as appropriate.
       - PROVIDER1_URL=http://provider1:8071/api/sms/provider1
       - PROVIDER2_URL=http://provider2:8072/api/sms/provider2
       - PROVIDER3_URL=http://provider3:8073/api/sms/provider3
@@ -61,9 +62,6 @@ services:
       - PORT_EMAIL_1=8091
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8071/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
     networks:
       - twillow-network
 
@@ -82,9 +80,6 @@ services:
       - PORT_EMAIL_2=8092
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8072/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
     networks:
       - twillow-network
 
@@ -103,9 +98,6 @@ services:
       - PORT_EMAIL_3=8093
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8073/health"]
-      interval: 10s
-      timeout: 3s
-      retries: 3
     networks:
       - twillow-network
 

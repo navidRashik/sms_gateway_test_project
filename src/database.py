@@ -97,10 +97,12 @@ class SMSRequestRepository:
 
     def __init__(self, engine=None):
         self.engine = engine or get_db_engine()
-
+ 
     def create_request(self, phone: str, text: str, provider_used: Optional[str] = None) -> SMSRequest:
-        """Create a new SMS request in the database."""
-        with get_db_session() as session:
+        """Create a new SMS request in the database using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             sms_request = SMSRequest(
                 phone=phone,
                 text=text,
@@ -111,65 +113,77 @@ class SMSRequestRepository:
                 failed_providers="",
                 is_permanently_failed=False
             )
-
+ 
             session.add(sms_request)
             session.flush()  # Get the ID without committing
             session.refresh(sms_request)
-
+ 
             logger.info(f"Created SMS request {sms_request.id} for phone {phone}")
             return sms_request
 
     def update_request_status(self, request_id: int, status: str, provider_used: Optional[str] = None) -> bool:
-        """Update SMS request status and provider."""
-        with get_db_session() as session:
+        """Update SMS request status and provider using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             sms_request = session.get(SMSRequest, request_id)
             if not sms_request:
                 logger.warning(f"SMS request {request_id} not found")
                 return False
-
+ 
             sms_request.status = status
             sms_request.provider_used = provider_used or sms_request.provider_used
             sms_request.updated_at = datetime.utcnow()
-
+ 
             logger.info(f"Updated SMS request {request_id} status to {status}")
             return True
 
     def update_request_retry_info(self, request_id: int, retry_count: int,
                                  failed_providers: str, is_permanently_failed: bool = False) -> bool:
-        """Update SMS request retry information."""
-        with get_db_session() as session:
+        """Update SMS request retry information using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             sms_request = session.get(SMSRequest, request_id)
             if not sms_request:
                 logger.warning(f"SMS request {request_id} not found")
                 return False
-
+ 
             sms_request.retry_count = retry_count
             sms_request.failed_providers = failed_providers
             sms_request.is_permanently_failed = is_permanently_failed
             sms_request.updated_at = datetime.utcnow()
-
+ 
             logger.info(f"Updated SMS request {request_id} retry info: count={retry_count}")
             return True
 
     def get_request_by_id(self, request_id: int) -> Optional[SMSRequest]:
-        """Get SMS request by ID."""
-        with get_db_session() as session:
+        """Get SMS request by ID using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             return session.get(SMSRequest, request_id)
 
     def get_requests_by_status(self, status: str, limit: int = 100) -> List[SMSRequest]:
-        """Get SMS requests by status."""
-        with get_db_session() as session:
+        """Get SMS requests by status using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             return session.exec(select(SMSRequest).where(SMSRequest.status == status).limit(limit)).all()
 
     def get_requests_by_provider(self, provider: str, limit: int = 100) -> List[SMSRequest]:
-        """Get SMS requests by provider."""
-        with get_db_session() as session:
+        """Get SMS requests by provider using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             return session.exec(select(SMSRequest).where(SMSRequest.provider_used == provider).limit(limit)).all()
 
     def get_requests_by_time_range(self, start_time: datetime, end_time: datetime,
                                   limit: int = 100) -> List[SMSRequest]:
-        """Get SMS requests within time range."""
-        with get_db_session() as session:
+        """Get SMS requests within time range using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             return session.exec(
                 select(SMSRequest).where(
                     and_(SMSRequest.created_at >= start_time, SMSRequest.created_at <= end_time)
@@ -181,8 +195,10 @@ class SMSRequestRepository:
                                  start_time: Optional[datetime] = None,
                                  end_time: Optional[datetime] = None,
                                  limit: int = 100) -> List[SMSRequest]:
-        """Get SMS requests with multiple filters."""
-        with get_db_session() as session:
+        """Get SMS requests with multiple filters using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             query = select(SMSRequest)
             
             if status:
@@ -193,14 +209,16 @@ class SMSRequestRepository:
                 query = query.where(SMSRequest.created_at >= start_time)
             if end_time:
                 query = query.where(SMSRequest.created_at <= end_time)
-
+ 
             return session.exec(query.limit(limit)).all()
 
     def get_request_stats(self) -> Dict[str, Any]:
-        """Get SMS request statistics."""
-        with get_db_session() as session:
+        """Get SMS request statistics using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             total_requests = session.exec(select(SMSRequest)).all()
-
+ 
             stats = {
                 "total_requests": len(total_requests),
                 "status_breakdown": {},
@@ -209,17 +227,17 @@ class SMSRequestRepository:
                     datetime.utcnow() - timedelta(hours=1), datetime.utcnow()
                 ))
             }
-
+ 
             # Count by status
             for status in ["pending", "processing", "completed", "failed"]:
                 count = len([r for r in total_requests if r.status == status])
                 stats["status_breakdown"][status] = count
-
+ 
             # Count by provider
             for provider in ["provider1", "provider2", "provider3"]:
                 count = len([r for r in total_requests if r.provider_used == provider])
                 stats["provider_breakdown"][provider] = count
-
+ 
             return stats
 
 
@@ -228,32 +246,36 @@ class SMSResponseRepository:
 
     def __init__(self, engine=None):
         self.engine = engine or get_db_engine()
-
+ 
     def create_response(self, request_id: int, response_data: str, status_code: int) -> SMSResponse:
-        """Create a new SMS response in the database."""
-        with get_db_session() as session:
+        """Create a new SMS response in the database using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             sms_response = SMSResponse(
                 request_id=request_id,
                 response_data=response_data,
                 status_code=status_code
             )
-
+ 
             session.add(sms_response)
             session.flush()
             session.refresh(sms_response)
-
+ 
             # Update the corresponding request status
             sms_request = session.get(SMSRequest, request_id)
             if sms_request:
                 sms_request.status = "completed" if status_code == 200 else "failed"
                 sms_request.updated_at = datetime.utcnow()
-
+ 
             logger.info(f"Created SMS response for request {request_id} with status {status_code}")
             return sms_response
 
     def get_response_by_request_id(self, request_id: int) -> Optional[SMSResponse]:
-        """Get SMS response by request ID."""
-        with get_db_session() as session:
+        """Get SMS response by request ID using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             return session.exec(select(SMSResponse).where(SMSResponse.request_id == request_id)).first()
 
     def get_responses_by_time_range(self, start_time: datetime, end_time: datetime,
@@ -272,11 +294,13 @@ class SMSRetryRepository:
 
     def __init__(self, engine=None):
         self.engine = engine or get_db_engine()
-
+ 
     def create_retry(self, request_id: int, attempt_number: int, provider_used: str,
                     error_message: str, delay_seconds: int) -> SMSRetry:
-        """Create a new SMS retry record."""
-        with get_db_session() as session:
+        """Create a new SMS retry record using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             sms_retry = SMSRetry(
                 request_id=request_id,
                 attempt_number=attempt_number,
@@ -284,17 +308,19 @@ class SMSRetryRepository:
                 error_message=error_message,
                 delay_seconds=delay_seconds
             )
-
+ 
             session.add(sms_retry)
             session.flush()
             session.refresh(sms_retry)
-
+ 
             logger.info(f"Created retry record {sms_retry.id} for request {request_id}, attempt {attempt_number}")
             return sms_retry
 
     def get_retries_by_request_id(self, request_id: int) -> List[SMSRetry]:
-        """Get all retry records for a request."""
-        with get_db_session() as session:
+        """Get all retry records for a request using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             return session.exec(select(SMSRetry).where(SMSRetry.request_id == request_id)).all()
 
 
@@ -303,19 +329,21 @@ class ProviderHealthRepository:
 
     def __init__(self, engine=None):
         self.engine = engine or get_db_engine()
-
+ 
     def update_provider_health(self, provider_name: str, success: bool) -> ProviderHealth:
-        """Update provider health metrics."""
-        with get_db_session() as session:
+        """Update provider health metrics using the repository's engine."""
+        from sqlmodel import Session as _Session
+ 
+        with _Session(self.engine) as session:
             # Get existing health record or create new one
             health_record = session.exec(
                 select(ProviderHealth).where(ProviderHealth.provider_name == provider_name)
             ).first()
-
+ 
             if not health_record:
                 health_record = ProviderHealth(provider_name=provider_name)
                 session.add(health_record)
-
+ 
             # Update metrics
             if success:
                 health_record.success_count += 1

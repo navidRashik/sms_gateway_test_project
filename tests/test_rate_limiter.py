@@ -83,7 +83,7 @@ class TestRateLimiter:
     @pytest.mark.asyncio
     async def test_get_current_count(self, rate_limiter, mock_redis):
         """Test getting current count without incrementing."""
-        mock_redis.get = AsyncMock(return_value=b"3")
+        mock_redis.get = AsyncMock(return_value="3")
 
         count = await rate_limiter.get_current_count("provider1")
 
@@ -113,7 +113,7 @@ class TestRateLimiter:
     @pytest.mark.asyncio
     async def test_get_rate_limit_stats_within_limit(self, rate_limiter, mock_redis):
         """Test getting rate limit statistics when within limit."""
-        mock_redis.get = AsyncMock(return_value=b"3")
+        mock_redis.get = AsyncMock(return_value="3")
 
         with patch('src.rate_limiter.time.time', return_value=1000.0):
             stats = await rate_limiter.get_rate_limit_stats("provider1")
@@ -128,7 +128,7 @@ class TestRateLimiter:
     @pytest.mark.asyncio
     async def test_get_rate_limit_stats_at_limit(self, rate_limiter, mock_redis):
         """Test getting rate limit statistics when at limit."""
-        mock_redis.get = AsyncMock(return_value=b"5")
+        mock_redis.get = AsyncMock(return_value="5")
 
         with patch('src.rate_limiter.time.time', return_value=1000.0):
             stats = await rate_limiter.get_rate_limit_stats("provider1")
@@ -140,7 +140,7 @@ class TestRateLimiter:
     @pytest.mark.asyncio
     async def test_get_rate_limit_stats_over_limit(self, rate_limiter, mock_redis):
         """Test getting rate limit statistics when over limit."""
-        mock_redis.get = AsyncMock(return_value=b"7")
+        mock_redis.get = AsyncMock(return_value="7")
 
         with patch('src.rate_limiter.time.time', return_value=1000.0):
             stats = await rate_limiter.get_rate_limit_stats("provider1")
@@ -177,9 +177,9 @@ class TestRateLimiter:
         """Test getting rate limit statistics for all providers."""
         def mock_get_side_effect(key):
             provider_map = {
-                "rate_limit:provider1": b"2",
-                "rate_limit:provider2": b"5",
-                "rate_limit:provider3": b"1"
+                "rate_limit:provider1": "2",
+                "rate_limit:provider2": "5",
+                "rate_limit:provider3": "1"
             }
             return provider_map.get(key)
 
