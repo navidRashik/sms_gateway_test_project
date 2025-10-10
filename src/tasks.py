@@ -171,14 +171,15 @@ async def send_sms_to_provider(
                     # Schedule the retry task with the calculated delay
                     try:
                         # Re-dispatch to select a fresh provider at execution time
-                        await dispatch_sms.kiq(
+                        task = dispatch_sms.kiq(
                             phone=phone,
                             text=text,
                             message_id=message_id,
                             request_id=request_id,
                             exclude_providers=[provider_id],
                             retry_count=retry_count + 1,
-                        ).schedule_by_time(redis_source, scheduled_time)
+                        )
+                        await task.schedule_by_time(redis_source, scheduled_time)
 
                         # Return failure result immediately - the retry will be handled by TaskIQ scheduler
                         return {
@@ -261,14 +262,15 @@ async def send_sms_to_provider(
 
             # Schedule the retry task with the calculated delay
             try:
-                await dispatch_sms.kiq(
+                task = dispatch_sms.kiq(
                     phone=phone,
                     text=text,
                     message_id=message_id,
                     request_id=request_id,
                     exclude_providers=[provider_id],
                     retry_count=retry_count + 1,
-                ).schedule_by_time(redis_source, scheduled_time)
+                )
+                await task.schedule_by_time(redis_source, scheduled_time)
 
                 # Return failure result immediately - the retry will be handled by TaskIQ scheduler
                 return {
@@ -351,14 +353,15 @@ async def send_sms_to_provider(
 
             # Schedule the retry task with the calculated delay
             try:
-                await dispatch_sms.kiq(
+                task = dispatch_sms.kiq(
                     phone=phone,
                     text=text,
                     message_id=message_id,
                     request_id=request_id,
                     exclude_providers=[provider_id],
                     retry_count=retry_count + 1,
-                ).schedule_by_time(redis_source, scheduled_time)
+                )
+                await task.schedule_by_time(redis_source, scheduled_time)
 
                 # Return failure result immediately - the retry will be handled by TaskIQ scheduler
                 return {

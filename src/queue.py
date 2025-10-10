@@ -110,43 +110,6 @@ async def get_distribution_service(
 
 
 @router.post(
-    "/",
-    response_model=SMSResponse,
-    summary="Send SMS (main endpoint)",
-    description="Send SMS with automatic rate limiting and queueing for high throughput",
-    response_description="SMS send result with message ID and status"
-)
-async def send_sms_root(
-    request: SMSRequest,
-    redis_client=Depends(get_redis_client),
-    rate_limiters=Depends(get_rate_limiters),
-) -> SMSResponse:
-    """
-    Send SMS with intelligent queueing and rate limiting (main endpoint).
-
-    This is the primary SMS endpoint that:
-    - Validates the request
-    - Checks rate limits for all providers
-    - Queues the SMS for asynchronous processing
-    - Returns immediate response with message ID
-
-    Args:
-        request: SMS request with phone and text
-
-    Returns:
-        SMS response with success status and message ID
-
-    Raises:
-        HTTPException: If request is invalid or system overloaded
-    """
-    return await send_sms(
-        request=request,
-        redis_client=redis_client,
-        rate_limiters=rate_limiters,
-    )
-
-
-@router.post(
     "/send",
     response_model=SMSResponse,
     summary="Send SMS with queueing",
