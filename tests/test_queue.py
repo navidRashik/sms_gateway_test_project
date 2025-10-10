@@ -75,10 +75,20 @@ def mock_global_rate_limiter(mock_redis):
 @pytest.fixture
 def test_db_engine():
     """Create in-memory SQLite database engine for testing."""
+    # Patch the global database engine to use in-memory SQLite for testing
+    from src.database import _engine
+    import src.database
+
+    # Create in-memory SQLite engine
     engine = create_engine("sqlite:///:memory:")
-    # Create all tables
-    from src.models import SMSRequest, SMSResponse, ProviderHealth, SMSRetry
+
+    # Set the global engine to our test engine
+    src.database._engine = engine
+
+    # Create all tables in the global engine
+    from sqlmodel import SQLModel
     SQLModel.metadata.create_all(engine)
+
     return engine
 
 
@@ -120,17 +130,26 @@ class TestSMSQueueEndpoints:
     async def test_send_sms_success(self, client, mock_redis, mock_rate_limiter, mock_global_rate_limiter, test_db_engine):
         """Test successful SMS sending."""
         # Mock the dependencies
-        with patch('src.queue.get_redis_client', return_value=mock_redis), \
-             patch('src.queue.create_rate_limiter', return_value=mock_rate_limiter), \
-             patch('src.queue.create_global_rate_limiter', return_value=mock_global_rate_limiter), \
-             patch('src.tasks.select_best_provider', return_value=("provider1", "http://provider1:8071/api/sms/provider1")), \
-             patch('src.tasks.send_sms_to_provider.kicker') as mock_send_task, \
-             patch('src.database.get_db_engine', return_value=test_db_engine), \
-             patch('src.database.get_sms_request_repository') as mock_get_request_repo, \
-             patch('src.database.get_sms_response_repository') as mock_get_response_repo, \
-             patch('src.database.get_sms_retry_repository') as mock_get_retry_repo, \
-             patch('src.database.get_provider_health_repository') as mock_get_health_repo:
-             
+        with (
+            patch("src.queue.get_redis_client", return_value=mock_redis),
+            patch("src.queue.create_rate_limiter", return_value=mock_rate_limiter),
+            patch(
+                "src.queue.create_global_rate_limiter",
+                return_value=mock_global_rate_limiter,
+            ),
+            patch(
+                "src.tasks.select_best_provider",
+                return_value=("provider1", "http://provider1:8071/api/sms/provider1"),
+            ),
+            patch("src.tasks.send_sms_to_provider.kicker") as mock_send_task,
+            patch("src.database.get_db_engine", return_value=test_db_engine),
+            patch("src.database.get_sms_request_repository") as mock_get_request_repo,
+            patch("src.database.get_sms_response_repository") as mock_get_response_repo,
+            patch("src.database.get_sms_retry_repository") as mock_get_retry_repo,
+            patch("src.database.get_provider_health_repository") as mock_get_health_repo,
+            patch("src.database.initialize_database") as mock_initialize_database,
+        ):
+            
             # Create repository instances with the test engine
             from src.database import SMSRequestRepository, SMSResponseRepository, SMSRetryRepository, ProviderHealthRepository
             request_repo = SMSRequestRepository(engine=test_db_engine)
@@ -143,9 +162,12 @@ class TestSMSQueueEndpoints:
             mock_get_retry_repo.return_value = retry_repo
             mock_get_health_repo.return_value = health_repo
             
-            # Initialize the database with tables
+            # Create all tables in the test engine directly
             from sqlmodel import SQLModel
             SQLModel.metadata.create_all(test_db_engine)
+            
+            # Call the initialize_database function to ensure it doesn't interfere
+            mock_initialize_database.return_value = None
 
             response = client.post(
                 "/api/sms/send",
@@ -275,9 +297,10 @@ class TestSMSQueueLogic:
     @pytest.mark.asyncio
     async def test_queue_sms_task_success(self, mock_redis, mock_rate_limiter, mock_global_rate_limiter, test_db_engine):
         """Test successful SMS task queueing."""
-        with patch('src.tasks.select_best_provider', return_value=("provider1", "http://provider1:8071/api/sms/provider1")), \
-             patch('src.tasks.send_sms_to_provider.kicker') as mock_send_task, \
-             patch('src.database.get_db_engine', return_value=test_db_engine):
+        with (
+            patch("src.tasks.dispatch_sms.kiq") as mock_dispatch_kiq,
+            patch("src.database.get_db_engine", return_value=test_db_engine),
+        ):
              
             # Initialize the database with tables
             from sqlmodel import SQLModel
@@ -293,15 +316,17 @@ class TestSMSQueueLogic:
             )
 
             assert message_id is not None
-            mock_send_task.assert_called_once()
+            mock_dispatch_kiq.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_queue_sms_task_no_provider(self, mock_redis, mock_rate_limiter, mock_global_rate_limiter, test_db_engine):
-        """Test SMS task queueing when no provider available."""
-        with patch('src.tasks.select_best_provider', return_value=None), \
-             patch('src.database.get_db_engine', return_value=test_db_engine), \
-             patch('src.database.initialize_database'):
-             
+    async def test_queue_sms_task_enqueues_dispatch(
+        self, mock_redis, mock_rate_limiter, mock_global_rate_limiter, test_db_engine
+    ):
+        """Queueing should always enqueue dispatch task regardless of immediate provider availability."""
+        with (
+            patch("src.tasks.dispatch_sms.kiq") as mock_dispatch_kiq,
+            patch("src.database.get_db_engine", return_value=test_db_engine),
+        ):
             # Initialize the database with tables
             from sqlmodel import SQLModel
             SQLModel.metadata.create_all(test_db_engine)
@@ -315,7 +340,8 @@ class TestSMSQueueLogic:
                 global_rate_limiter=mock_global_rate_limiter
             )
 
-            assert message_id is None
+            assert message_id is not None
+            mock_dispatch_kiq.assert_called_once()
 
 
 class TestIntegration:

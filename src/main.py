@@ -16,7 +16,6 @@ from redis.asyncio import Redis
 from taskiq_redis import redis_broker
 
 from .config import settings
-from .providers import router as providers_router
 from .queue import router as queue_router
 from .middleware import create_rate_limiting_middleware
 from .tasks import broker
@@ -82,7 +81,6 @@ async def root():
 
 # Include routers
 app.include_router(queue_router, prefix="/api/sms", tags=["SMS Queue"])
-app.include_router(providers_router, prefix="/api/sms", tags=["SMS Providers"])
 
 
 @app.get("/taskiq-status")

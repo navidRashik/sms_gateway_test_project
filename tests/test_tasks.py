@@ -2,8 +2,7 @@
 Tests for Taskiq tasks and SMS processing.
 """
 
-import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -12,7 +11,7 @@ from src.tasks import (
     process_sms_batch,
     get_available_providers,
     select_best_provider,
-    queue_sms_task
+    queue_sms_task,
 )
 
 
@@ -62,57 +61,62 @@ class TestSendSMSToProvider:
             assert result["provider"] == "provider1"
 
     @pytest.mark.asyncio
-    async def test_send_sms_timeout_with_retry(self):
-        """Test SMS timeout with retry."""
-        # Mock timeout on first attempt, success on retry
-        timeout_exception = Exception("Timeout")
+    async def test_send_sms_timeout_schedules_retry(self):
+        """On timeout, the task should schedule a retry via dispatch task, not retry HTTP inline."""
+        # Mock timeout exception specific to httpx
+        import httpx
 
-        success_response = AsyncMock()
-        success_response.status_code = 200
-        success_response.json.return_value = {"success": True}
+        timeout_exception = httpx.TimeoutException("Timeout")
 
-        with patch('httpx.AsyncClient.post') as mock_post:
-            # First call raises timeout, second succeeds
-            mock_post.side_effect = [timeout_exception, success_response]
+        with (
+            patch("httpx.AsyncClient.post", side_effect=timeout_exception) as mock_post,
+            patch("src.tasks.dispatch_sms") as mock_dispatch_task,
+        ):
+            # Mock the kiq().schedule_by_time chain
+            mock_kick = MagicMock()
+            mock_dispatch_task.kiq.return_value = mock_kick
 
-            with patch('asyncio.sleep'):  # Speed up test
-                result = await send_sms_to_provider(
-                    provider_url="http://provider1:8071/api/sms",
-                    phone="01921317475",
-                    text="Hello World!",
-                    message_id="msg_123",
-                    provider_id="provider1",
-                    retry_count=0
-                )
+            result = await send_sms_to_provider(
+                provider_url="http://provider1:8071/api/sms",
+                phone="01921317475",
+                text="Hello World!",
+                message_id="msg_123",
+                provider_id="provider1",
+                retry_count=0,
+            )
 
-                # Should have retried and succeeded
-                assert mock_post.call_count == 2
+            # Only one HTTP attempt happened
+            assert mock_post.call_count == 1
+            # Retry scheduled through dispatch task
+            assert result["success"] is False
+            assert result.get("retry_scheduled") is True
+            assert mock_dispatch_task.kiq.called
 
     @pytest.mark.asyncio
     async def test_send_sms_max_retries_exceeded(self):
-        """Test SMS failure after max retries."""
+        """Test SMS failure after max retries returns error without scheduling."""
         # Mock persistent failure
         mock_response = AsyncMock()
         mock_response.status_code = 500
         mock_response.text = "Internal Server Error"
-        mock_response.raise_for_status.side_effect = Exception("HTTP Error")
+        with (
+            patch("httpx.AsyncClient.post", return_value=mock_response),
+            patch("src.tasks.dispatch_sms.kiq") as mock_dispatch_kiq,
+        ):
+            result = await send_sms_to_provider(
+                provider_url="http://provider1:8071/api/sms",
+                phone="01921317475",
+                text="Hello World!",
+                message_id="msg_123",
+                provider_id="provider1",
+                retry_count=5,  # Already at max retries
+            )
 
-        with patch('httpx.AsyncClient.post') as mock_post:
-            mock_post.return_value = mock_response
-            with patch('asyncio.sleep'):  # Speed up test
-
-                result = await send_sms_to_provider(
-                    provider_url="http://provider1:8071/api/sms",
-                    phone="01921317475",
-                    text="Hello World!",
-                    message_id="msg_123",
-                    provider_id="provider1",
-                    retry_count=5  # Already at max retries
-                )
-
-                assert result["success"] is False
-                assert "HTTP Error" in result["error"]
-                assert result["retry_count"] == 5
+            assert result["success"] is False
+            assert "HTTP 500" in result["error"]
+            assert result["retry_count"] == 5
+            # No scheduling when max retries already reached
+            assert not mock_dispatch_kiq.called
 
 
 class TestProcessSMSBatch:
@@ -240,10 +244,8 @@ class TestQueueSMS:
 
     @pytest.mark.asyncio
     async def test_queue_sms_task_success(self, mock_rate_limiter, mock_global_rate_limiter):
-        """Test successful SMS queueing."""
-        with patch('src.tasks.select_best_provider', return_value=("provider1", "http://provider1:8071/api/sms/provider1")), \
-             patch.object(send_sms_to_provider, 'kicker') as mock_send:
-
+        """Test successful SMS queueing enqueues dispatch task."""
+        with patch("src.tasks.dispatch_sms.kiq") as mock_dispatch_kiq:
             message_id = await queue_sms_task(
                 phone="01921317475",
                 text="Hello World!",
@@ -252,12 +254,14 @@ class TestQueueSMS:
             )
 
             assert message_id is not None
-            mock_send.assert_called_once()
+            mock_dispatch_kiq.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_queue_sms_task_no_provider(self, mock_rate_limiter, mock_global_rate_limiter):
-        """Test SMS queueing when no provider available."""
-        with patch('src.tasks.select_best_provider', return_value=None):
+    async def test_queue_sms_task_enqueues_dispatch(
+        self, mock_rate_limiter, mock_global_rate_limiter
+    ):
+        """Queueing should enqueue dispatch regardless of immediate provider availability."""
+        with patch("src.tasks.dispatch_sms.kiq") as mock_dispatch_kiq:
             message_id = await queue_sms_task(
                 phone="01921317475",
                 text="Hello World!",
@@ -265,7 +269,8 @@ class TestQueueSMS:
                 global_rate_limiter=mock_global_rate_limiter
             )
 
-            assert message_id is None
+            assert message_id is not None
+            mock_dispatch_kiq.assert_called_once()
 
 
 class TestTaskiqIntegration:
@@ -280,7 +285,7 @@ class TestTaskiqIntegration:
             from redis.asyncio import Redis
             redis_client = Redis.from_url("redis://localhost:6379")
             await redis_client.ping()
-        except:
+        except Exception:
             pytest.skip("Redis not available for integration tests")
 
         # Test broker creation and basic functionality

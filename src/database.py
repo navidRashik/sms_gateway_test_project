@@ -14,8 +14,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from sqlalchemy import create_engine, and_, or_, desc
-from sqlalchemy.orm import sessionmaker, Session
-from sqlmodel import SQLModel, select
+from sqlalchemy.orm import sessionmaker
+from sqlmodel import SQLModel, select, Session
 
 from .config import settings
 from .models import SMSRequest, SMSResponse, ProviderHealth, SMSRetry
@@ -40,16 +40,23 @@ def get_db_engine():
                 "check_same_thread": False,  # Allow multiple threads
                 "timeout": 20.0,  # Connection timeout
             }
-
-        _engine = create_engine(
-            settings.database_url,
-            connect_args=connect_args,
-            pool_size=20,  # Base connection pool size
-            max_overflow=30,  # Additional connections when pool is full
-            pool_timeout=30,  # Timeout for getting connection from pool
-            pool_recycle=3600,  # Recycle connections after 1 hour
-            echo=settings.debug,  # Log SQL if debug mode is enabled
-        )
+        # For SQLite use default engine options (pooling args not supported on SingletonThreadPool)
+        if settings.database_url.startswith("sqlite"):
+            _engine = create_engine(
+                settings.database_url,
+                connect_args=connect_args,
+                echo=settings.debug,
+            )
+        else:
+            _engine = create_engine(
+                settings.database_url,
+                connect_args=connect_args,
+                pool_size=20,  # Base connection pool size
+                max_overflow=30,  # Additional connections when pool is full
+                pool_timeout=30,  # Timeout for getting connection from pool
+                pool_recycle=3600,  # Recycle connections after 1 hour
+                echo=settings.debug,  # Log SQL if debug mode is enabled
+            )
     return _engine
 
 
@@ -63,11 +70,9 @@ def get_session_factory():
 
 
 @contextmanager
-def get_db_session(session_factory=None):
+def get_db_session():
     """Context manager for database sessions with automatic cleanup."""
-    if session_factory is None:
-        session_factory = get_session_factory()
-    session = session_factory()
+    session = get_session_factory()()
     try:
         yield session
         session.commit()
