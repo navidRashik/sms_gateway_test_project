@@ -5,9 +5,14 @@ This module sets up the TaskIQ scheduler with RedisScheduleSource for proper
 time-based task scheduling, including retry delays and exponential backoff.
 """
 import logging
-from taskiq_redis import ListQueueBroker, RedisScheduleSource, RedisAsyncResultBackend
+
 from taskiq import TaskiqScheduler
 from taskiq.serializers import JSONSerializer
+from taskiq_redis import (
+    RedisStreamBroker,
+    RedisAsyncResultBackend,
+    RedisScheduleSource,
+)
 
 from src.config import settings
 from src.taskiq_config import TaskIQConfig
@@ -23,7 +28,7 @@ result_backend = RedisAsyncResultBackend(
 )
 
 # Create broker for task execution with result backend
-broker = ListQueueBroker(
+broker = RedisStreamBroker(
     url=settings.taskiq_broker_url,
     queue_name=TaskIQConfig.QUEUE_NAME,
     max_connection_pool_size=TaskIQConfig.MAX_CONNECTION_POOL_SIZE,

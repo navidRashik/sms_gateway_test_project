@@ -21,8 +21,12 @@ class Settings(BaseSettings):
 
     # Provider endpoints (localhost for development)
     provider1_url: str = Field(default="http://localhost:8071/api/sms/provider1", env="PROVIDER1_URL")
-    provider2_url: str = Field(default="http://localhost:8071/api/sms/provider2", env="PROVIDER2_URL")
-    provider3_url: str = Field(default="http://localhost:8071/api/sms/provider3", env="PROVIDER3_URL")
+    provider2_url: str = Field(
+        default="http://localhost:8072/api/sms/provider2", env="PROVIDER2_URL"
+    )
+    provider3_url: str = Field(
+        default="http://localhost:8073/api/sms/provider3", env="PROVIDER3_URL"
+    )
 
     # Taskiq configuration
     taskiq_broker_url: str = Field(default="redis://localhost:6379", env="TASKIQ_BROKER_URL")

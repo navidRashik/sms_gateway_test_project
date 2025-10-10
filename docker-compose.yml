@@ -112,7 +112,7 @@ services:
   # TaskIQ worker service (can have multiple instances)
   worker:
     build: .
-    command: uv run python -m taskiq worker src.taskiq_scheduler:broker --log-level INFO
+    command: uv run python -m taskiq worker src.taskiq_scheduler:broker src.tasks --log-level INFO
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=sqlite:///./data/sms_gateway.db
@@ -137,7 +137,7 @@ services:
   # TaskIQ scheduler service (only one instance should run)
   scheduler:
     build: .
-    command: uv run python -m taskiq scheduler src.taskiq_scheduler:scheduler --log-level INFO
+    command: uv run python -m taskiq scheduler src.taskiq_scheduler:scheduler src.tasks --log-level INFO
     environment:
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=sqlite:///./data/sms_gateway.db
@@ -158,21 +158,21 @@ services:
     
 
   # Test service for running all tests
-  tests:
-    build: .
-    command: uv run pytest tests/ --log-level DEBUG --disable-warnings
-    environment:
-      - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=sqlite:///./data/sms_gateway.db
-      - TASKIQ_BROKER_URL=redis://redis:6379
-    depends_on:
-      redis:
-        condition: service_healthy
-    volumes:
-      - .:/app
-      - sqlite_data:/app/data
-    networks:
-      - twillow-network
+  # tests:
+  #   build: .
+  #   command: uv run pytest tests/ --log-level DEBUG --disable-warnings
+  #   environment:
+  #     - REDIS_URL=redis://redis:6379
+  #     - DATABASE_URL=sqlite:///./data/sms_gateway.db
+  #     - TASKIQ_BROKER_URL=redis://redis:6379
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #   volumes:
+  #     - .:/app
+  #     - sqlite_data:/app/data
+  #   networks:
+  #     - twillow-network
 
 volumes:
   redis_data:

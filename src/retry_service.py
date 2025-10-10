@@ -23,6 +23,15 @@ from .models import SMSRequest, SMSRetry
 from .health_tracker import ProviderHealthTracker
 from .config import settings
 
+# Expose send_sms_to_provider at module level for tests that patch
+# 'src.retry_service.send_sms_to_provider'. Importing here may create a
+# circular import in some runtime flows, so attempt import and fall back
+# to a lazy resolver when needed.
+try:
+    from .tasks import send_sms_to_provider  # type: ignore
+except Exception:
+    send_sms_to_provider = None
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -392,27 +401,26 @@ class RetryService:
             
             # Schedule the retry task with the calculated delay
             try:
-                send_sms_to_provider.kiq(
+                await send_sms_to_provider.kiq(
                     provider_url=provider_url,
                     phone=phone,
                     text=text,
                     message_id=f"retry_{request_id}_{current_attempt}",
                     provider_id=provider_id,
-                    retry_count=current_attempt - 1  # This represents the retry count for the scheduled task
-                ).schedule_by_time(
-                    redis_source,
-                    scheduled_time
-                )
+                    retry_count=current_attempt
+                    - 1,  # This represents the retry count for the scheduled task
+                ).schedule_by_time(redis_source, scheduled_time)
             except Exception as e:
                 logger.error(f"Failed to schedule retry for request {request_id}: {str(e)}")
                 # Fallback to immediate queuing if scheduling fails
-                send_sms_to_provider.kiq(
+                await send_sms_to_provider.kiq(
                     provider_url=provider_url,
                     phone=phone,
                     text=text,
                     message_id=f"retry_{request_id}_{current_attempt}",
                     provider_id=provider_id,
-                    retry_count=current_attempt - 1  # This represents the retry count for the scheduled task
+                    retry_count=current_attempt
+                    - 1,  # This represents the retry count for the scheduled task
                 )
 
             return {

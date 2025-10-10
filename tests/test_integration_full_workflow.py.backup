@@ -303,27 +303,21 @@ class TestEndToEndSMSWorkflow:
             # Should indicate retry is scheduled
             assert result1["success"] is False
             assert "retry_scheduled" in result1
-            # Mock the retry task to simulate retry execution
-            with patch("src.tasks.send_sms_to_provider") as mock_retry_send:
-                mock_retry_send.return_value = {
-                    "success": True,
-                    "message_id": message_id,
-                    "provider": provider_id,
-                    "response": {"message_id": "provider_456", "status": "delivered"},
-                    "retry_count": 1,
-                }
 
-                # Second attempt - should succeed
-                result2 = await send_sms_to_provider(
-                    provider_url=provider_url,
-                    phone=our_request.phone,
-                    text=our_request.text,
-                    message_id=message_id,
-                    provider_id=provider_id,
-                    retry_count=1,
-                    health_tracker=components["health_tracker"],
-                    request_id=our_request.id,
-                )
+            # Mock the retry task to simulate retry execution
+            with patch('src.tasks.send_sms_to_provider') as mock_retry_send:
+
+            # Second attempt - should succeed
+            result2 = await send_sms_to_provider(
+                provider_url=provider_url,
+                phone=our_request.phone,
+                text=our_request.text,
+                message_id=message_id,
+                provider_id=provider_id,
+                retry_count=1,
+                health_tracker=components["health_tracker"],
+                request_id=our_request.id
+            )
 
             # Should succeed on retry
             assert result2["success"] is True

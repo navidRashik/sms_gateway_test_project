@@ -57,6 +57,14 @@ def get_db_engine():
                 pool_recycle=3600,  # Recycle connections after 1 hour
                 echo=settings.debug,  # Log SQL if debug mode is enabled
             )
+        # Ensure all tables are created on first engine creation so tests and
+        # runtime code that call get_db_engine() immediately can rely on
+        # SQLModel metadata existing in the database.
+        try:
+            SQLModel.metadata.create_all(_engine)
+        except Exception:
+            # Creating tables is best-effort; callers may handle migrations.
+            logger.debug("create_all failed when initializing engine; continuing")
     return _engine
 
 

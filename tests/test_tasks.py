@@ -101,7 +101,9 @@ class TestSendSMSToProvider:
         mock_response.text = "Internal Server Error"
         with (
             patch("httpx.AsyncClient.post", return_value=mock_response),
-            patch("src.tasks.dispatch_sms.kiq") as mock_dispatch_kiq,
+            patch(
+                "src.tasks.dispatch_sms.kiq", new_callable=AsyncMock
+            ) as mock_dispatch_kiq,
         ):
             result = await send_sms_to_provider(
                 provider_url="http://provider1:8071/api/sms",
@@ -133,8 +135,10 @@ class TestProcessSMSBatch:
             ]
         }
 
-        # Mock successful SMS sending
-        with patch.object(send_sms_to_provider, 'kicker') as mock_send:
+        # Mock successful SMS sending (ensure kicker is an AsyncMock so await works)
+        with patch.object(
+            send_sms_to_provider, "kicker", new_callable=AsyncMock
+        ) as mock_send:
             mock_send.return_value = {
                 "success": True,
                 "message_id": "msg_1",
@@ -165,8 +169,10 @@ class TestProcessSMSBatch:
             ]
         }
 
-        # Mock one success, one failure
-        with patch.object(send_sms_to_provider, 'kicker') as mock_send:
+        # Mock one success, one failure (AsyncMock for awaited kicker)
+        with patch.object(
+            send_sms_to_provider, "kicker", new_callable=AsyncMock
+        ) as mock_send:
             mock_send.side_effect = [
                 {"success": True, "message_id": "msg_1", "provider": "provider1"},
                 {"success": False, "message_id": "msg_2", "provider": "provider1", "error": "Failed"}
@@ -245,7 +251,9 @@ class TestQueueSMS:
     @pytest.mark.asyncio
     async def test_queue_sms_task_success(self, mock_rate_limiter, mock_global_rate_limiter):
         """Test successful SMS queueing enqueues dispatch task."""
-        with patch("src.tasks.dispatch_sms.kiq") as mock_dispatch_kiq:
+        with patch(
+            "src.tasks.dispatch_sms.kiq", new_callable=AsyncMock
+        ) as mock_dispatch_kiq:
             message_id = await queue_sms_task(
                 phone="01921317475",
                 text="Hello World!",
@@ -261,7 +269,9 @@ class TestQueueSMS:
         self, mock_rate_limiter, mock_global_rate_limiter
     ):
         """Queueing should enqueue dispatch regardless of immediate provider availability."""
-        with patch("src.tasks.dispatch_sms.kiq") as mock_dispatch_kiq:
+        with patch(
+            "src.tasks.dispatch_sms.kiq", new_callable=AsyncMock
+        ) as mock_dispatch_kiq:
             message_id = await queue_sms_task(
                 phone="01921317475",
                 text="Hello World!",

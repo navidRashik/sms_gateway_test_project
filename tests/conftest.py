@@ -115,39 +115,3 @@ def test_db_session(test_db_engine):
         yield session
     finally:
         session.close()
-def rate_limit_config():
-    """Sample rate limit configuration."""
-    return {
-        "provider_rate_limit": 50,
-        "global_rate_limit": 200,
-        "window_seconds": 1
-    }
-
-
-@pytest.fixture
-def test_db_engine():
-    """Create in-memory SQLite database engine for testing."""
-    # Override the database URL for testing
-    os.environ["DATABASE_URL"] = "sqlite:///:memory:"
-    
-    # Import settings after overriding environment variable
-    from src.config import settings
-    
-    # Create in-memory SQLite engine
-    engine = create_engine("sqlite:///:memory:")
-    
-    # Create all tables
-    SQLModel.metadata.create_all(engine)
-    
-    return engine
-
-
-@pytest.fixture
-def test_db_session(test_db_engine):
-    """Create database session for testing."""
-    session_local = sessionmaker(bind=test_db_engine, expire_on_commit=False)
-    session = session_local()
-    try:
-        yield session
-    finally:
-        session.close()

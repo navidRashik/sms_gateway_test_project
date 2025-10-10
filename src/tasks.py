@@ -112,9 +112,7 @@ async def send_sms_to_provider(
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                f"{provider_url}/{provider_id}",
-                json=payload,
-                headers={"Content-Type": "application/json"}
+                provider_url, json=payload, headers={"Content-Type": "application/json"}
             )
 
             if response.status_code == 200:
@@ -173,7 +171,7 @@ async def send_sms_to_provider(
                     # Schedule the retry task with the calculated delay
                     try:
                         # Re-dispatch to select a fresh provider at execution time
-                        dispatch_sms.kiq(
+                        await dispatch_sms.kiq(
                             phone=phone,
                             text=text,
                             message_id=message_id,
@@ -197,7 +195,7 @@ async def send_sms_to_provider(
                             f"Failed to schedule retry for {message_id}: {str(e)}"
                         )
                         # Fallback to immediate re-dispatch if scheduling fails
-                        dispatch_sms.kiq(
+                        await dispatch_sms.kiq(
                             phone=phone,
                             text=text,
                             message_id=message_id,
@@ -263,7 +261,7 @@ async def send_sms_to_provider(
 
             # Schedule the retry task with the calculated delay
             try:
-                dispatch_sms.kiq(
+                await dispatch_sms.kiq(
                     phone=phone,
                     text=text,
                     message_id=message_id,
@@ -287,7 +285,7 @@ async def send_sms_to_provider(
                     f"Failed to schedule timeout retry for {message_id}: {str(e)}"
                 )
                 # Fallback to immediate re-dispatch if scheduling fails
-                dispatch_sms.kiq(
+                await dispatch_sms.kiq(
                     phone=phone,
                     text=text,
                     message_id=message_id,
@@ -353,7 +351,7 @@ async def send_sms_to_provider(
 
             # Schedule the retry task with the calculated delay
             try:
-                dispatch_sms.kiq(
+                await dispatch_sms.kiq(
                     phone=phone,
                     text=text,
                     message_id=message_id,
@@ -377,7 +375,7 @@ async def send_sms_to_provider(
                     f"Failed to schedule error retry for {message_id}: {str(e)}"
                 )
                 # Fallback to immediate re-dispatch if scheduling fails
-                dispatch_sms.kiq(
+                await dispatch_sms.kiq(
                     phone=phone,
                     text=text,
                     message_id=message_id,
@@ -608,15 +606,15 @@ async def dispatch_sms(
                     f"Failed to update request {request_id} before send: {db_error}"
                 )
 
-        # Enqueue the actual send
-        send_sms_to_provider.kiq(
+        # Enqueue the actual send (don't pass health_tracker - it's not serializable)
+        await send_sms_to_provider.kiq(
             provider_url=provider_url,
             phone=phone,
             text=text,
             message_id=message_id,
             provider_id=provider_id,
             retry_count=retry_count,
-            health_tracker=health_tracker,
+            health_tracker=None,  # Health tracker cannot be serialized, will be recreated in task
             request_id=request_id,
         )
 
@@ -663,12 +661,12 @@ async def queue_sms_task(
         sms_request_repo.update_request_status(sms_request.id, "processing")
 
         # Queue the dispatch task which selects provider at execution time
-        dispatch_sms.kiq(
+        await dispatch_sms.kiq(
             phone=phone,
             text=text,
             message_id=message_id,
             request_id=sms_request.id,
-            exclude_providers=None,
+            exclude_providers=[],
             retry_count=0,
         )
 

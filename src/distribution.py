@@ -5,14 +5,14 @@ This module implements intelligent request distribution that uses weighted round
 when providers are healthy and fallback logic when providers become unhealthy.
 """
 
-import logging
 import asyncio
-from typing import Dict, Any, Optional, Tuple, List
-from dataclasses import dataclass, field
+import logging
 from collections import defaultdict, deque
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 from .health_tracker import ProviderHealthTracker
-from .rate_limiter import RateLimiter, GlobalRateLimiter
+from .rate_limiter import GlobalRateLimiter, RateLimiter
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -172,9 +172,109 @@ class SMSDistributionService:
 
         return provider_id
 
+    async def _should_use_weighted_distribution(self) -> bool:
+        """
+        Determine if weighted distribution should be used based on provider health.
+
+        Returns True if any provider has failures, False otherwise.
+        """
+        for provider_id in self.provider_urls.keys():
+            health_info = await self.health_tracker.get_health_status(provider_id)
+            failure_count = health_info.get("failure_count", 0)
+            if failure_count > 0:
+                return True
+        return False
+
+    async def _get_weighted_provider_round_robin(self) -> Optional[str]:
+        """
+        Get provider using weighted round-robin based on success rates.
+        Providers with higher success rates get more weight.
+        """
+        healthy_providers = self._get_healthy_providers()
+        if not healthy_providers:
+            return None
+
+        # Calculate weights based on success rates
+        weights = {}
+        for provider_id in healthy_providers:
+            health_info = await self.health_tracker.get_health_status(provider_id)
+            success_rate = health_info.get("success_rate", 1.0)
+            # Use success rate as weight (higher success = higher weight)
+            weights[provider_id] = max(0.1, success_rate)  # Minimum weight of 0.1
+
+        # Select provider with highest weight that hasn't been used recently
+        # This balances between success rate and even distribution
+        sorted_providers = sorted(
+            healthy_providers,
+            key=lambda p: (weights[p], -self.provider_usage_count.get(p, 0)),
+            reverse=True,
+        )
+
+        return sorted_providers[0] if sorted_providers else None
+
+    async def _get_simple_round_robin(self, providers: List[str]) -> Optional[str]:
+        """
+        Simple round-robin across all providers.
+
+        Args:
+            providers: List of provider IDs to distribute across
+
+        Returns:
+            Selected provider ID or None
+        """
+        if not providers:
+            return None
+
+        # Use round-robin index to select provider
+        provider_id = providers[
+            self.distribution_stats.round_robin_index % len(providers)
+        ]
+
+        # Update index for next selection
+        self.distribution_stats.round_robin_index += 1
+
+        return provider_id
+
+    async def _find_alternative_provider(
+        self, excluded_provider: str, use_weighted: bool
+    ) -> Optional[str]:
+        """
+        Find an alternative provider excluding the given provider.
+
+        Args:
+            excluded_provider: Provider ID to exclude
+            use_weighted: Whether to use weighted selection
+
+        Returns:
+            Alternative provider ID or None
+        """
+        # Get all healthy non-rate-limited providers except the excluded one
+        alternative_providers = [
+            p for p in self._get_healthy_providers() if p != excluded_provider
+        ]
+
+        if not alternative_providers:
+            return None
+
+        if use_weighted:
+            # Use weighted selection for alternatives
+            weights = {}
+            for provider_id in alternative_providers:
+                health_info = await self.health_tracker.get_health_status(provider_id)
+                success_rate = health_info.get("success_rate", 1.0)
+                weights[provider_id] = max(0.1, success_rate)
+
+            # Select best alternative
+            best_provider = max(alternative_providers, key=lambda p: weights[p])
+            return best_provider
+        else:
+            # Simple round-robin for alternatives
+            return alternative_providers[0]
+
     async def select_provider(self) -> Optional[Tuple[str, str]]:
         """
-        Select the best provider for SMS distribution using weighted round-robin logic.
+        Select the best provider for SMS distribution using round-robin from start,
+        switching to weighted round-robin when failures occur.
 
         Returns:
             Tuple of (provider_id, provider_url) or None if no provider available
@@ -190,41 +290,58 @@ class SMSDistributionService:
                 logger.warning(f"Global rate limit exceeded: {global_count}")
                 return None
 
-            # Get healthy providers
-            healthy_providers = self._get_healthy_providers()
-            total_providers = len(self.provider_urls)
-            healthy_count = len(healthy_providers)
-            unhealthy_count = total_providers - healthy_count
+            # Get all available providers (not filtering by individual rate limits for initial distribution)
+            all_providers = list(self.provider_urls.keys())
 
             # Update distribution statistics
             self.distribution_stats.total_requests += 1
-            self.distribution_stats.healthy_providers = healthy_count
-            self.distribution_stats.unhealthy_providers = unhealthy_count
 
-            # Log current status
-            logger.debug(f"Provider status - Total: {total_providers}, Healthy: {healthy_count}, Unhealthy: {unhealthy_count}")
+            # Check if we should use weighted distribution based on failure history
+            use_weighted_distribution = await self._should_use_weighted_distribution()
 
-            if healthy_count == 0:
-                logger.warning("No healthy providers available for distribution")
-                return None
-
-            # Update healthy providers queue
-            self._update_healthy_providers_queue(healthy_providers)
-
-            # Select provider using round-robin
-            selected_provider = await self._get_next_provider_round_robin()
+            if use_weighted_distribution:
+                # Use weighted round-robin based on success rates
+                selected_provider = await self._get_weighted_provider_round_robin()
+                distribution_type = "weighted round-robin"
+            else:
+                # Use simple round-robin across all providers for even initial distribution
+                selected_provider = await self._get_simple_round_robin(all_providers)
+                distribution_type = "round-robin"
 
             if selected_provider:
+                # Check if this provider is rate limited before final selection
+                status = self.provider_status[selected_provider]
+                if status.is_rate_limited:
+                    logger.warning(
+                        f"Provider {selected_provider} is rate limited, skipping"
+                    )
+                    # Try to find an alternative non-rate-limited provider
+                    alternative_provider = await self._find_alternative_provider(
+                        selected_provider, use_weighted_distribution
+                    )
+                    if alternative_provider:
+                        selected_provider = alternative_provider
+                        logger.info(
+                            f"Selected alternative provider {selected_provider} due to rate limiting"
+                        )
+                    else:
+                        logger.warning(
+                            f"No available non-rate-limited provider for {selected_provider}"
+                        )
+                        return None
+
                 # Update usage statistics
                 self.provider_usage_count[selected_provider] += 1
                 self.distribution_stats.requests_per_provider[selected_provider] += 1
 
                 provider_url = self.provider_urls[selected_provider]
-                logger.info(f"Selected provider {selected_provider} via weighted round-robin (usage count: {self.provider_usage_count[selected_provider]})")
+                logger.info(
+                    f"Selected provider {selected_provider} via {distribution_type} (usage count: {self.provider_usage_count[selected_provider]})"
+                )
 
                 return selected_provider, provider_url
             else:
-                logger.warning("No provider selected despite having healthy providers")
+                logger.warning("No provider selected")
                 return None
 
         except Exception as e:

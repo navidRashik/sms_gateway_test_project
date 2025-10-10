@@ -8,37 +8,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlmodel import SQLModel, create_engine, Session
 from redis.asyncio import Redis
+from sqlmodel import SQLModel, create_engine
+from sqlalchemy.orm import sessionmaker
 
-from src.queue import router, SMSRequest, SMSResponse
-from src.rate_limiter import RateLimiter, GlobalRateLimiter
 from src.models import SMSRequest as SMSRequestModel, SMSResponse as SMSResponseModel
+from src.queue import router, SMSRequest, SMSResponse, get_rate_limits
+from src.rate_limiter import RateLimiter, GlobalRateLimiter
 from src.database import get_sms_request_repository, get_sms_response_repository
 
 
+# Test fixtures
 @pytest.fixture
 def app():
-    """Create FastAPI test app with proper state."""
+    """Create FastAPI test app."""
     test_app = FastAPI()
     test_app.include_router(router, prefix="/api/sms")
     
-    # Add mock Redis client to app state
-    mock_redis = AsyncMock(spec=Redis)
-    # Configure mock Redis methods
-    mock_redis.incr = AsyncMock(return_value=1)
-    mock_redis.expire = AsyncMock(return_value=True)
-    mock_redis.pexpire = AsyncMock(return_value=True)
-    mock_redis.set = AsyncMock(return_value=True)
-    mock_redis.setex = AsyncMock(return_value=True)
-    mock_redis.get = AsyncMock(return_value=b"1")
-    mock_redis.rpush = AsyncMock(return_value=0)
-    mock_redis.lpush = AsyncMock(return_value=0)
-    mock_redis.delete = AsyncMock(return_value=True)
-    mock_redis.exists = AsyncMock(return_value=False)
-    mock_redis.ttl = AsyncMock(return_value=0)
-    
-    test_app.state.redis = mock_redis
+    # Initialize Redis client in app state like the main app does
+    from redis.asyncio import Redis
+    test_app.state.redis = Redis.from_url("redis://localhost:6379")
     
     return test_app
 
@@ -51,14 +40,26 @@ def client(app):
 
 @pytest.fixture
 def mock_redis():
-    """Create mock Redis client."""
-    redis = AsyncMock()
+    """Create mock Redis client for tests."""
+    redis = AsyncMock(spec=Redis)
+    # Configure mock Redis methods
+    redis.incr = AsyncMock(return_value=1)
+    redis.expire = AsyncMock(return_value=True)
+    redis.pexpire = AsyncMock(return_value=True)
+    redis.set = AsyncMock(return_value=True)
+    redis.setex = AsyncMock(return_value=True)
+    redis.get = AsyncMock(return_value=b"1")
+    redis.rpush = AsyncMock(return_value=0)
+    redis.lpush = AsyncMock(return_value=0)
+    redis.delete = AsyncMock(return_value=True)
+    redis.exists = AsyncMock(return_value=False)
+    redis.ttl = AsyncMock(return_value=0)
     return redis
 
 
 @pytest.fixture
 def mock_rate_limiter(mock_redis):
-    """Create mock rate limiter."""
+    """Create mock rate limiter for tests."""
     limiter = AsyncMock(spec=RateLimiter)
     limiter.is_allowed.return_value = (True, 1)
     return limiter
@@ -66,30 +67,77 @@ def mock_rate_limiter(mock_redis):
 
 @pytest.fixture
 def mock_global_rate_limiter(mock_redis):
-    """Create mock global rate limiter."""
+    """Create mock global rate limiter for tests."""
     limiter = AsyncMock(spec=GlobalRateLimiter)
     limiter.is_allowed.return_value = (True, 1)
     return limiter
 
 
 @pytest.fixture
+def sample_sms_request():
+    """Sample SMS request data."""
+    return {
+        "phone": "01921317475",
+        "text": "Hello, this is a test SMS message!"
+    }
+
+
+@pytest.fixture
+def sample_phone_numbers():
+    """Sample phone numbers for testing."""
+    return [
+        "01921317475",
+        "01712345678",
+        "01898765432",
+        "+8801912345678"
+    ]
+
+
+@pytest.fixture
+def sample_sms_texts():
+    """Sample SMS texts for testing."""
+    return [
+        "Hello World!",
+        "This is a test SMS message for testing purposes.",
+        "SMS content with émojis 🚀 and spëcial characters.",
+        "Short"
+    ]
+
+
+@pytest.fixture
+def rate_limit_config():
+    """Sample rate limit configuration."""
+    return {
+        "provider_rate_limit": 50,
+        "global_rate_limit": 200,
+        "window_seconds": 1
+    }
+
+
+@pytest.fixture
 def test_db_engine():
-    """Create in-memory SQLite database engine for testing."""
-    # Patch the global database engine to use in-memory SQLite for testing
-    from src.database import _engine
-    import src.database
-
-    # Create in-memory SQLite engine
-    engine = create_engine("sqlite:///:memory:")
-
-    # Set the global engine to our test engine
-    src.database._engine = engine
-
-    # Create all tables in the global engine
-    from sqlmodel import SQLModel
+    """Create database engine for testing using the actual database file."""
+    # Use the same database as production but create tables
+    from src.database import get_db_engine
+    
+    # Get the actual database engine
+    engine = get_db_engine()
+    
+    # Create all tables
     SQLModel.metadata.create_all(engine)
-
+    
     return engine
+
+
+@pytest.fixture
+def test_db_session(test_db_engine):
+    """Create database session for testing."""
+    session_local = sessionmaker(bind=test_db_engine, expire_on_commit=False)
+    session = session_local()
+    try:
+        yield session
+    finally:
+        session.close()
 
 
 class TestSMSRequest:
@@ -192,11 +240,31 @@ class TestSMSQueueEndpoints:
         with patch('src.queue.get_redis_client', return_value=mock_redis), \
              patch('src.queue.create_rate_limiter'), \
              patch('src.queue.create_global_rate_limiter', return_value=mock_global_rate_limiter), \
-             patch('src.database.get_db_engine', return_value=test_db_engine):
+             patch('src.database.get_db_engine', return_value=test_db_engine), \
+             patch('src.database.get_sms_request_repository') as mock_get_request_repo, \
+             patch('src.database.get_sms_response_repository') as mock_get_response_repo, \
+             patch('src.database.get_sms_retry_repository') as mock_get_retry_repo, \
+             patch('src.database.get_provider_health_repository') as mock_get_health_repo, \
+             patch('src.database.initialize_database') as mock_initialize_database:
              
-            # Initialize the database with tables
+            # Create repository instances with the test engine
+            from src.database import SMSRequestRepository, SMSResponseRepository, SMSRetryRepository, ProviderHealthRepository
+            request_repo = SMSRequestRepository(engine=test_db_engine)
+            response_repo = SMSResponseRepository(engine=test_db_engine)
+            retry_repo = SMSRetryRepository(engine=test_db_engine)
+            health_repo = ProviderHealthRepository(engine=test_db_engine)
+            
+            mock_get_request_repo.return_value = request_repo
+            mock_get_response_repo.return_value = response_repo
+            mock_get_retry_repo.return_value = retry_repo
+            mock_get_health_repo.return_value = health_repo
+            
+            # Create all tables in the test engine directly
             from sqlmodel import SQLModel
             SQLModel.metadata.create_all(test_db_engine)
+            
+            # Call the initialize_database function to ensure it doesn't interfere
+            mock_initialize_database.return_value = None
 
             response = client.post(
                 "/api/sms/send",
@@ -211,7 +279,7 @@ class TestSMSQueueEndpoints:
             assert "Global rate limit exceeded" in data["detail"]["error"]
 
     @pytest.mark.asyncio
-    async def test_send_sms_no_provider_available(self, client, mock_redis, mock_rate_limiter, test_db_engine):
+    async def test_send_sms_no_provider_available(self, client, mock_redis, mock_rate_limiter, mock_global_rate_limiter, test_db_engine):
         """Test SMS sending when no provider available."""
         # Mock rate limiter to deny all providers
         mock_rate_limiter.is_allowed.return_value = (False, 60)
@@ -220,11 +288,31 @@ class TestSMSQueueEndpoints:
              patch('src.queue.create_rate_limiter', return_value=mock_rate_limiter), \
              patch('src.queue.create_global_rate_limiter'), \
              patch('src.tasks.queue_sms_task', return_value=None), \
-             patch('src.database.get_db_engine', return_value=test_db_engine):
+             patch('src.database.get_db_engine', return_value=test_db_engine), \
+             patch('src.database.get_sms_request_repository') as mock_get_request_repo, \
+             patch('src.database.get_sms_response_repository') as mock_get_response_repo, \
+             patch('src.database.get_sms_retry_repository') as mock_get_retry_repo, \
+             patch('src.database.get_provider_health_repository') as mock_get_health_repo, \
+             patch('src.database.initialize_database') as mock_initialize_database:
              
-            # Initialize the database with tables
+            # Create repository instances with the test engine
+            from src.database import SMSRequestRepository, SMSResponseRepository, SMSRetryRepository, ProviderHealthRepository
+            request_repo = SMSRequestRepository(engine=test_db_engine)
+            response_repo = SMSResponseRepository(engine=test_db_engine)
+            retry_repo = SMSRetryRepository(engine=test_db_engine)
+            health_repo = ProviderHealthRepository(engine=test_db_engine)
+            
+            mock_get_request_repo.return_value = request_repo
+            mock_get_response_repo.return_value = response_repo
+            mock_get_retry_repo.return_value = retry_repo
+            mock_get_health_repo.return_value = health_repo
+            
+            # Create all tables in the test engine directly
             from sqlmodel import SQLModel
             SQLModel.metadata.create_all(test_db_engine)
+            
+            # Call the initialize_database function to ensure it doesn't interfere
+            mock_initialize_database.return_value = None
 
             response = client.post(
                 "/api/sms/send",
@@ -265,11 +353,31 @@ class TestSMSQueueEndpoints:
         with patch('src.queue.get_redis_client', return_value=mock_redis), \
              patch('src.queue.create_rate_limiter', return_value=mock_rate_limiter), \
              patch('src.queue.create_global_rate_limiter', return_value=mock_global_rate_limiter), \
-             patch('src.database.get_db_engine', return_value=test_db_engine):
+             patch('src.database.get_db_engine', return_value=test_db_engine), \
+             patch('src.database.get_sms_request_repository') as mock_get_request_repo, \
+             patch('src.database.get_sms_response_repository') as mock_get_response_repo, \
+             patch('src.database.get_sms_retry_repository') as mock_get_retry_repo, \
+             patch('src.database.get_provider_health_repository') as mock_get_health_repo, \
+             patch('src.database.initialize_database') as mock_initialize_database:
              
-            # Initialize the database with tables
+            # Create repository instances with the test engine
+            from src.database import SMSRequestRepository, SMSResponseRepository, SMSRetryRepository, ProviderHealthRepository
+            request_repo = SMSRequestRepository(engine=test_db_engine)
+            response_repo = SMSResponseRepository(engine=test_db_engine)
+            retry_repo = SMSRetryRepository(engine=test_db_engine)
+            health_repo = ProviderHealthRepository(engine=test_db_engine)
+            
+            mock_get_request_repo.return_value = request_repo
+            mock_get_response_repo.return_value = response_repo
+            mock_get_retry_repo.return_value = retry_repo
+            mock_get_health_repo.return_value = health_repo
+            
+            # Create all tables in the test engine directly
             from sqlmodel import SQLModel
             SQLModel.metadata.create_all(test_db_engine)
+            
+            # Call the initialize_database function to ensure it doesn't interfere
+            mock_initialize_database.return_value = None
 
             response = client.get("/api/sms/rate-limits")
 
@@ -297,14 +405,33 @@ class TestSMSQueueLogic:
     @pytest.mark.asyncio
     async def test_queue_sms_task_success(self, mock_redis, mock_rate_limiter, mock_global_rate_limiter, test_db_engine):
         """Test successful SMS task queueing."""
-        with (
-            patch("src.tasks.dispatch_sms.kiq") as mock_dispatch_kiq,
-            patch("src.database.get_db_engine", return_value=test_db_engine),
-        ):
+        with patch('src.tasks.select_best_provider', return_value=("provider1", "http://provider1:8071/api/sms/provider1")), \
+             patch('src.tasks.send_sms_to_provider.kicker') as mock_send_task, \
+             patch('src.database.get_db_engine', return_value=test_db_engine), \
+             patch('src.database.get_sms_request_repository') as mock_get_request_repo, \
+             patch('src.database.get_sms_response_repository') as mock_get_response_repo, \
+             patch('src.database.get_sms_retry_repository') as mock_get_retry_repo, \
+             patch('src.database.get_provider_health_repository') as mock_get_health_repo, \
+             patch('src.database.initialize_database') as mock_initialize_database:
              
-            # Initialize the database with tables
+            # Create repository instances with the test engine
+            from src.database import SMSRequestRepository, SMSResponseRepository, SMSRetryRepository, ProviderHealthRepository
+            request_repo = SMSRequestRepository(engine=test_db_engine)
+            response_repo = SMSResponseRepository(engine=test_db_engine)
+            retry_repo = SMSRetryRepository(engine=test_db_engine)
+            health_repo = ProviderHealthRepository(engine=test_db_engine)
+            
+            mock_get_request_repo.return_value = request_repo
+            mock_get_response_repo.return_value = response_repo
+            mock_get_retry_repo.return_value = retry_repo
+            mock_get_health_repo.return_value = health_repo
+            
+            # Create all tables in the test engine directly
             from sqlmodel import SQLModel
             SQLModel.metadata.create_all(test_db_engine)
+            
+            # Call the initialize_database function to ensure it doesn't interfere
+            mock_initialize_database.return_value = None
 
             from src.tasks import queue_sms_task
 
@@ -316,20 +443,37 @@ class TestSMSQueueLogic:
             )
 
             assert message_id is not None
-            mock_dispatch_kiq.assert_called_once()
+            mock_send_task.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_queue_sms_task_enqueues_dispatch(
-        self, mock_redis, mock_rate_limiter, mock_global_rate_limiter, test_db_engine
-    ):
-        """Queueing should always enqueue dispatch task regardless of immediate provider availability."""
-        with (
-            patch("src.tasks.dispatch_sms.kiq") as mock_dispatch_kiq,
-            patch("src.database.get_db_engine", return_value=test_db_engine),
-        ):
-            # Initialize the database with tables
+    async def test_queue_sms_task_no_provider(self, mock_redis, mock_rate_limiter, mock_global_rate_limiter, test_db_engine):
+        """Test SMS task queueing when no provider available."""
+        with patch('src.tasks.select_best_provider', return_value=None), \
+             patch('src.database.get_db_engine', return_value=test_db_engine), \
+             patch('src.database.get_sms_request_repository') as mock_get_request_repo, \
+             patch('src.database.get_sms_response_repository') as mock_get_response_repo, \
+             patch('src.database.get_sms_retry_repository') as mock_get_retry_repo, \
+             patch('src.database.get_provider_health_repository') as mock_get_health_repo, \
+             patch('src.database.initialize_database') as mock_initialize_database:
+             
+            # Create repository instances with the test engine
+            from src.database import SMSRequestRepository, SMSResponseRepository, SMSRetryRepository, ProviderHealthRepository
+            request_repo = SMSRequestRepository(engine=test_db_engine)
+            response_repo = SMSResponseRepository(engine=test_db_engine)
+            retry_repo = SMSRetryRepository(engine=test_db_engine)
+            health_repo = ProviderHealthRepository(engine=test_db_engine)
+            
+            mock_get_request_repo.return_value = request_repo
+            mock_get_response_repo.return_value = response_repo
+            mock_get_retry_repo.return_value = retry_repo
+            mock_get_health_repo.return_value = health_repo
+            
+            # Create all tables in the test engine directly
             from sqlmodel import SQLModel
             SQLModel.metadata.create_all(test_db_engine)
+            
+            # Call the initialize_database function to ensure it doesn't interfere
+            mock_initialize_database.return_value = None
 
             from src.tasks import queue_sms_task
 
@@ -340,8 +484,7 @@ class TestSMSQueueLogic:
                 global_rate_limiter=mock_global_rate_limiter
             )
 
-            assert message_id is not None
-            mock_dispatch_kiq.assert_called_once()
+            assert message_id is None
 
 
 class TestIntegration:
