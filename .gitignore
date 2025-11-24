@@ -54,6 +54,12 @@ jspm_packages/
 .env.local
 .env.*.local
 
+# Google Cloud credentials
+**/application_default_credentials.json
+**/*credentials*.json
+!.devcontainer/
+.gcloud/
+
 # === Shared / IDE / OS ===
 
 # IDE folders

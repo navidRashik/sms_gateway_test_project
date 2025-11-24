@@ -27,12 +27,26 @@ High-throughput SMS gateway monorepo with FastAPI (Python), Node.js providers, R
 
 ### Option 1: Using DevContainer (Recommended)
 
+The devcontainer includes Claude CLI with Vertex AI support for AI-assisted development.
+
 1. **Install Prerequisites:**
    - [Docker Desktop](https://www.docker.com/products/docker-desktop)
    - [VS Code](https://code.visualstudio.com/)
    - [Dev Containers Extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
+   - [Google Cloud SDK](https://cloud.google.com/sdk/docs/install) (for Vertex AI)
 
-2. **Open in DevContainer:**
+2. **Set up Vertex AI (One-time setup):**
+   ```bash
+   # Authenticate with Google Cloud
+   gcloud auth application-default login
+
+   # Add to your ~/.zshrc or ~/.bashrc:
+   export CLAUDE_CODE_USE_VERTEX=1
+   export ANTHROPIC_VERTEX_PROJECT_ID=your-project-id
+   export VERTEX_REGION_CLAUDE_4_5_SONNET=asia-southeast1
+   ```
+
+3. **Open in DevContainer:**
    ```bash
    # Clone the repository
    git clone <your-repo-url>
@@ -42,16 +56,27 @@ High-throughput SMS gateway monorepo with FastAPI (Python), Node.js providers, R
    code .
    ```
 
-3. **Reopen in Container:**
+4. **Reopen in Container:**
    - Press `F1` or `Cmd+Shift+P` (Mac) / `Ctrl+Shift+P` (Windows/Linux)
    - Select: `Dev Containers: Reopen in Container`
    - Wait for the container to build and start
 
-4. **Start All Services:**
+5. **Test Claude CLI (Inside container):**
+   ```bash
+   # Run the test script
+   bash .devcontainer/test-claude.sh
+
+   # Start copilot mode
+   claude copilot
+   ```
+
+6. **Start All Services:**
    ```bash
    # Inside the devcontainer terminal
    docker-compose up --build
    ```
+
+For more details on the devcontainer setup, see [.devcontainer/README.md](.devcontainer/README.md).
 
 5. **Access the Services:**
    - Gateway API: http://localhost:8000
