@@ -1,17 +1,39 @@
 {
-  "type": "module",
+  "name": "sms-gateway-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SMS Gateway Monorepo - High-throughput SMS gateway with FastAPI and Node.js providers",
   "scripts": {
-    "start": "tsx sms_gateway_provider.ts"
+    "dev": "docker-compose up",
+    "dev:build": "docker-compose up --build",
+    "dev:down": "docker-compose down",
+    "dev:clean": "docker-compose down -v",
+    "logs": "docker-compose logs -f",
+    "logs:gateway": "docker-compose logs -f gateway",
+    "logs:providers": "docker-compose logs -f provider1 provider2 provider3",
+    "logs:workers": "docker-compose logs -f worker scheduler",
+    "test:gateway": "cd apps/gateway && uv run pytest",
+    "test:providers": "cd apps/providers && npm test",
+    "install:gateway": "cd apps/gateway && uv sync",
+    "install:providers": "cd apps/providers && npm install",
+    "install:all": "npm run install:gateway && npm run install:providers"
   },
-  "dependencies": {
-    "dotenv": "^17.2.3",
-    "express": "^5.1.0",
-    "ts-node": "^10.9.2",
-    "tsx": "^4.7.0"
+  "workspaces": [
+    "apps/providers"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/sms-gateway-monorepo"
   },
-  "devDependencies": {
-    "@types/express": "^4.17.21",
-    "@types/node": "^20.10.0",
-    "typescript": "^5.3.0"
-  }
+  "keywords": [
+    "sms",
+    "gateway",
+    "fastapi",
+    "nodejs",
+    "monorepo",
+    "redis",
+    "taskiq"
+  ],
+  "author": "",
+  "license": "MIT"
 }

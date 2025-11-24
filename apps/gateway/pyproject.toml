@@ -1,0 +1,68 @@
+[project]
+name = "twillow-sms-service"
+version = "0.1.0"
+description = "High-throughput SMS service with Redis queueing and rate limiting"
+authors = [
+    {name = "Twillow Team"}
+]
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "redis[hiredis]>=5.0.0",
+    "taskiq>=0.8.0",
+    "taskiq-redis>=0.8.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.0.0",
+    "httpx>=0.25.0",
+    "python-dotenv>=1.0.0",
+    "sqlmodel>=0.0.14",
+    "alembic>=1.12.0",
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+]
+requires-python = ">=3.11"
+readme = "README.md"
+
+[project.scripts]
+twillow-worker = "src.worker:main"
+twillow-scheduler = "src.scheduler:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "ruff>=0.1.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+
+
+
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+select = ["E", "F", "I"]
+ignore = ["E501"]  # Allow long lines for now
+
+[tool.taskiq]
+broker = "redis://localhost:6379"
+workers = 2
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

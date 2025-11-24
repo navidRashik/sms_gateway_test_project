@@ -63,3 +63,27 @@ jspm_packages/
 # OS-specific files
 .DS_Store
 Thumbs.db
+
+# === Monorepo specific ===
+
+# Database files
+*.db
+*.db-journal
+
+# Docker volumes
+data/
+
+# Legacy files at root (keep organized structure)
+/src/
+/alembic/
+/tests/
+/Dockerfile
+/Dockerfile.nodejs
+/pyproject.toml
+/uv.lock
+/requirements.txt
+/requirements-uv.txt
+/alembic.ini
+/pytest.ini
+/tsconfig.json
+/sms_gateway_provider.ts

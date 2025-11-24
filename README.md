@@ -1,150 +1,325 @@
-# Twillow SMS Gateway
 
-High-throughput SMS gateway using FastAPI, Redis, TaskIQ, and SQLite. Designed to queue incoming SMS requests and distribute them across multiple providers while enforcing per-provider and global rate limits.
+# SMS Gateway Monorepo
 
-## Quickstart (Docker Compose)
+High-throughput SMS gateway monorepo with FastAPI (Python), Node.js providers, Redis, TaskIQ, and SQLite. Designed to queue incoming SMS requests and distribute them across multiple providers while enforcing per-provider and global rate limits.
 
-Start local services (Redis, provider mocks, app):
+## 📁 Monorepo Structure
 
-```bash
-docker-compose up --build
+```
+.
+├── apps/
+│   ├── gateway/          # FastAPI SMS gateway service (Python)
+│   │   ├── src/          # Application source code
+│   │   ├── tests/        # Test suite
+│   │   ├── alembic/      # Database migrations
+│   │   ├── Dockerfile    # Gateway container
+│   │   └── pyproject.toml
+│   └── providers/        # Mock SMS/Email provider service (Node.js)
+│       ├── sms_gateway_provider.ts
+│       ├── Dockerfile
+│       └── package.json
+├── .devcontainer/        # VS Code devcontainer configuration
+├── docker-compose.yml    # Multi-service orchestration
+└── package.json          # Monorepo scripts
 ```
 
-App will be available at http://localhost:8000 and OpenAPI at http://localhost:8000/docs
+## 🚀 Quick Start
 
-## Local development (uv)
+### Option 1: Using DevContainer (Recommended)
 
-Install dependencies and run the app locally:
+1. **Install Prerequisites:**
+   - [Docker Desktop](https://www.docker.com/products/docker-desktop)
+   - [VS Code](https://code.visualstudio.com/)
+   - [Dev Containers Extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
+
+2. **Open in DevContainer:**
+   ```bash
+   # Clone the repository
+   git clone <your-repo-url>
+   cd sms_gateway_test_project
+
+   # Open in VS Code
+   code .
+   ```
+
+3. **Reopen in Container:**
+   - Press `F1` or `Cmd+Shift+P` (Mac) / `Ctrl+Shift+P` (Windows/Linux)
+   - Select: `Dev Containers: Reopen in Container`
+   - Wait for the container to build and start
+
+4. **Start All Services:**
+   ```bash
+   # Inside the devcontainer terminal
+   docker-compose up --build
+   ```
+
+5. **Access the Services:**
+   - Gateway API: http://localhost:8000
+   - API Documentation: http://localhost:8000/docs
+   - Provider 1: http://localhost:8071
+   - Provider 2: http://localhost:8072
+   - Provider 3: http://localhost:8073
+
+### Option 2: Using Docker Compose (Without DevContainer)
+
+1. **Install Prerequisites:**
+   - [Docker Desktop](https://www.docker.com/products/docker-desktop)
+
+2. **Start All Services:**
+   ```bash
+   # From the project root
+   docker-compose up --build
+   ```
+
+3. **Access the Services:**
+   - Gateway API: http://localhost:8000
+   - API Documentation: http://localhost:8000/docs
+
+### Option 3: Local Development (Manual Setup)
+
+#### Gateway Service (Python)
 
 ```bash
-# Install and sync dependencies (using uv)
+cd apps/gateway
+
+# Install uv (if not already installed)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies
 uv sync
 
-# Activate the virtual environment
+# Activate virtual environment
 source .venv/bin/activate
 
 # Run the application
-uvicorn "src.main:app" --reload --host 0.0.0.0 --port 8000
+uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-## Run TaskIQ worker
-
-Start the background worker that processes SMS tasks:
+#### Provider Service (Node.js)
 
 ```bash
-# Activate virtualenv first (if using .venv)
-source .venv/bin/activate
+cd apps/providers
 
-# Run the TaskIQ worker (uses src/worker.py)
-python -m src.worker
+# Install dependencies
+npm install
+
+# Run the provider service
+npm start
 ```
 
-## Configuration
+**Note:** You'll also need Redis running locally for the full stack:
+```bash
+docker run -d -p 6379:6379 redis:7-alpine
+```
 
-Configuration is driven by environment variables or a `.env` file (see [`src/config.py`](src/config.py:40) for defaults and descriptions).
+## 📦 Available NPM Scripts
 
-Important variables:
-- REDIS_URL (default: redis://localhost:6379)
-- TASKIQ_BROKER_URL (default: redis://localhost:6379)
-- DATABASE_URL (default: sqlite:///./sms_service.db)
-- PROVIDER1_URL, PROVIDER2_URL, PROVIDER3_URL
-- PROVIDER_RATE_LIMIT (default: 50)
-- TOTAL_RATE_LIMIT (default: 200)
-- RATE_LIMIT_WINDOW (default: 1)  <- sliding window duration in seconds (see "Sliding-window testing" below)
-- HEALTH_WINDOW_DURATION (default: 300) <- health tracking window in seconds
-- DEBUG (true/false)
-
-Example `.env` (project root):
+From the root directory:
 
 ```bash
-# bash
-REDIS_URL=redis://localhost:6379
-TASKIQ_BROKER_URL=redis://localhost:6379
+# Start all services
+npm run dev
+
+# Start all services (rebuild images)
+npm run dev:build
+
+# Stop all services
+npm run dev:down
+
+# Stop all services and remove volumes
+npm run dev:clean
+
+# View all logs
+npm run logs
+
+# View specific service logs
+npm run logs:gateway
+npm run logs:providers
+npm run logs:workers
+
+# Run tests
+npm run test:gateway
+npm run test:providers
+
+# Install dependencies
+npm run install:gateway
+npm run install:providers
+npm run install:all
+```
+
+## 🏗️ Architecture
+
+### Services
+
+1. **Gateway** (`apps/gateway/`)
+   - FastAPI application
+   - Handles SMS request validation and queueing
+   - Manages rate limiting and provider distribution
+   - Port: 8000
+
+2. **Providers** (`apps/providers/`)
+   - Three mock provider instances (Node.js/TypeScript)
+   - Simulates SMS/Email sending with random failures
+   - Ports: 8071-8073 (SMS), 8091-8093 (Email)
+
+3. **Redis**
+   - Message broker for TaskIQ
+   - Rate limiting storage
+   - Port: 6379
+
+4. **Workers**
+   - Background task processors (2 replicas)
+   - Process SMS sending tasks asynchronously
+
+5. **Scheduler**
+   - TaskIQ scheduler for periodic tasks
+   - Health tracking and metrics
+
+### Key Components
+
+- **Rate Limiting**: Per-provider and global rate limits using Redis (`apps/gateway/src/rate_limiter.py`)
+- **Provider Distribution**: Health-aware routing (`apps/gateway/src/distribution.py`)
+- **Health Tracking**: Monitor provider success/failure rates (`apps/gateway/src/health_tracker.py`)
+- **Retry Service**: Exponential backoff for failed messages (`apps/gateway/src/retry_service.py`)
+
+## ⚙️ Configuration
+
+Configuration is driven by environment variables. Create a `.env` file in the root directory:
+
+```bash
+# Redis
+REDIS_URL=redis://redis:6379
+TASKIQ_BROKER_URL=redis://redis:6379
+
+# Database
 DATABASE_URL=sqlite:///./data/sms_gateway.db
-PROVIDER1_URL=http://localhost:8071/api/sms/provider1
-PROVIDER2_URL=http://localhost:8072/api/sms/provider2
-PROVIDER3_URL=http://localhost:8073/api/sms/provider3
+
+# Provider URLs (for Docker Compose)
+PROVIDER1_URL=http://provider1:8071/api/sms/provider1
+PROVIDER2_URL=http://provider2:8072/api/sms/provider2
+PROVIDER3_URL=http://provider3:8073/api/sms/provider3
+
+# Rate Limiting
 PROVIDER_RATE_LIMIT=50
 TOTAL_RATE_LIMIT=200
 RATE_LIMIT_WINDOW=1
+
+# Health Tracking
 HEALTH_WINDOW_DURATION=300
+
+# Debug
 DEBUG=true
 ```
 
-## Sliding-window note (important for reviewers & manual testing)
+See `apps/gateway/src/config.py` for all available configuration options.
 
-The per-provider and global rate limiting use a sliding/1-second window controlled by the setting `rate_limit_window` (env: `RATE_LIMIT_WINDOW`) defined in [`src/config.py`](src/config.py:40). You can lower this value (for example to `1`) and reduce `HEALTH_WINDOW_DURATION` to a small number (for example `5`) to manually reproduce rate-limit and health-tracking behavior quickly during review.
+## 🧪 Testing
 
-Key testing idea:
-- Set RATE_LIMIT_WINDOW=1 and HEALTH_WINDOW_DURATION=5 to make the system reset counters every second and compute provider health over a short 5-second window.
-- Use a simple load generator (curl loop or small script) to send bursts and observe:
-  - per-provider counters increment and expire each second,
-  - providers hitting their configured limit return 429 from the gateway (or are skipped by distribution),
-  - health tracker flips provider health to unhealthy once failure rate > threshold (see `HEALTH_WINDOW_DURATION` and `health_failure_threshold` in [`src/config.py`](src/config.py:43)).
-
-Example manual test steps:
-1. Start stack:
-   ```bash
-   docker-compose up --build
-   ```
-2. Edit `.env` to set:
-   ```bash
-   RATE_LIMIT_WINDOW=1
-   HEALTH_WINDOW_DURATION=5
-   PROVIDER_RATE_LIMIT=5
-   TOTAL_RATE_LIMIT=20
-   ```
-3. Send a small burst of requests (example using bash loop):
-   ```bash
-   for i in {1..30}; do
-     curl -sS -X POST http://localhost:8000/api/sms \
-       -H "Content-Type: application/json" \
-       -d '{"phone":"+15551234567","text":"test '$i'"}' &
-   done
-   wait
-   ```
-4. Observe repository logs (app + worker) and Redis keys; you should see some requests rejected/queued due to rate limits and provider health events if provider mocks are failing.
-
-## Running tests
-
-Run full test suite:
+### Run All Tests
 
 ```bash
-# from project root
-pytest -q
+# Gateway tests
+cd apps/gateway
+uv run pytest
+
+# Or from root
+npm run test:gateway
 ```
 
-Run targeted tests (quick reviewer checks):
+### Run Specific Tests
 
 ```bash
+cd apps/gateway
+
 # Health tracker tests
-pytest tests/test_health_tracker.py::TestProviderHealthTracker -q
+uv run pytest tests/test_health_tracker.py::TestProviderHealthTracker -q
 
-# Rate limiter high-load scenario
-pytest tests/test_rate_limiter_high_load.py -q -k "rate_limiter"
+# Rate limiter tests
+uv run pytest tests/test_rate_limiter_high_load.py -q
 
-# Distribution / queue focused tests
-pytest tests/test_queue.py::TestQueue -q
+# Queue tests
+uv run pytest tests/test_queue.py::TestQueue -q
 ```
 
-Notes:
-- Many tests use `redis.AsyncMock` fixtures; they run fast and do not require a real Redis instance.
-- Integration tests that simulate end-to-end behavior provide in-memory mocks for Redis to make results deterministic for CI/review.
+## 🐛 Troubleshooting
 
-## Architecture (short)
+### Services won't start
 
-- FastAPI app (`src/main.py`) exposes the `/api/sms` endpoint that validates and queues requests.
-- TaskIQ (Redis broker) is used to process tasks asynchronously (worker in `src/worker.py`).
-- Rate limiting is implemented in [`src/rate_limiter.py`](src/rate_limiter.py) and enforced both at middleware and distribution layers.
-- Provider distribution and health-aware routing implemented in [`src/distribution.py`](src/distribution.py) and [`src/health_tracker.py`](src/health_tracker.py).
-- Retries and exponential backoff handled in [`src/retry_service.py`](src/retry_service.py).
+1. Check if ports are already in use:
+   ```bash
+   lsof -i :8000,8071,8072,8073,6379
+   ```
 
-## Troubleshooting (quick)
+2. Clean up Docker resources:
+   ```bash
+   npm run dev:clean
+   docker system prune -a
+   ```
 
-- If the worker doesn't pick tasks: ensure Redis is reachable at `TASKIQ_BROKER_URL`.
-- If rate limits behave unexpectedly: check `RATE_LIMIT_WINDOW` and ensure provider keys are expiring (per-window).
-- To debug health tracking issues, temporarily lower `HEALTH_WINDOW_DURATION` and enable `DEBUG` to see logs.
+### Worker not picking up tasks
 
-## Contributing
+- Ensure Redis is running and accessible
+- Check `TASKIQ_BROKER_URL` environment variable
+- View worker logs: `npm run logs:workers`
 
-Follow branch/PR conventions in `AGENTS.md`. Create a feature branch, include tests for new behavior, and ensure CI passes.
+### Rate limiting issues
+
+- Check `RATE_LIMIT_WINDOW` setting
+- Ensure Redis keys are expiring correctly
+- Enable debug mode: `DEBUG=true`
+
+### Database issues
+
+- Database location: `apps/gateway/data/sms_gateway.db`
+- Run migrations: `cd apps/gateway && uv run alembic upgrade head`
+
+## 📝 Development Workflow
+
+### Adding New Features
+
+1. Create a feature branch
+2. Make changes in the appropriate service (`apps/gateway` or `apps/providers`)
+3. Add tests
+4. Run tests locally
+5. Create a pull request
+
+### Working with DevContainer
+
+The devcontainer provides:
+- All necessary Python and Node.js dependencies pre-installed
+- VS Code extensions for Python, TypeScript, Docker
+- Proper linting and formatting on save
+- Direct access to all services
+
+### Debugging
+
+1. **Gateway Service:**
+   - Set breakpoints in VS Code
+   - Use the built-in Python debugger
+   - View logs: `docker-compose logs -f gateway`
+
+2. **Provider Service:**
+   - Add console.log statements
+   - View logs: `docker-compose logs -f provider1 provider2 provider3`
+
+## 📚 Additional Documentation
+
+- Gateway architecture: `apps/gateway/src/` (see individual modules)
+- Agent documentation: `AGENTS.md`
+- API documentation: http://localhost:8000/docs (when running)
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📄 License
+
+MIT
+
+## 🙋 Support
+
+For issues and questions, please use the GitHub issue tracker.

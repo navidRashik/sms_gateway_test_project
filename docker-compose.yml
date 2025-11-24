@@ -4,6 +4,7 @@ services:
   # Redis for queueing and rate limiting
   redis:
     image: redis:7-alpine
+    platform: linux/arm64
     ports:
       - "6379:6379"
     volumes:
@@ -18,15 +19,16 @@ services:
       - twillow-network
 
   # Main FastAPI application
-  app:
-    build: .
+  gateway:
+    platform: linux/arm64
+    build:
+      context: ./apps/gateway
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     environment:
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=sqlite:///./data/sms_gateway.db  # Updated path to use data directory
-      # Inside docker-compose, use service hostnames (provider1/provider2/provider3).
-      # From the host machine use http://localhost:8071,8072,8073 as appropriate.
+      - DATABASE_URL=sqlite:///./data/sms_gateway.db
       - PROVIDER1_URL=http://provider1:8071/api/sms/provider1
       - PROVIDER2_URL=http://provider2:8072/api/sms/provider2
       - PROVIDER3_URL=http://provider3:8073/api/sms/provider3
@@ -42,68 +44,92 @@ services:
       provider3:
         condition: service_healthy
     volumes:
-      - .:/app
-      - sqlite_data:/app/data
+      - ./apps/gateway:/app
+      - gateway_data:/app/data
     networks:
       - twillow-network
 
   # SMS Provider 1 (TypeScript service)
   provider1:
+    platform: linux/arm64
     build:
-      context: .
-      dockerfile: Dockerfile.nodejs
+      context: ./apps/providers
+      dockerfile: Dockerfile
     command: npm start
     user: root
     ports:
       - "8071:8071"
+      - "8091:8091"
     environment:
       - SERVICE_PROVIDER_INDEX=1
       - PORT_SMS_1=8071
       - PORT_EMAIL_1=8091
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8071/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    volumes:
+      - ./apps/providers:/app
     networks:
       - twillow-network
 
   # SMS Provider 2 (TypeScript service)
   provider2:
+    platform: linux/arm64
     build:
-      context: .
-      dockerfile: Dockerfile.nodejs
+      context: ./apps/providers
+      dockerfile: Dockerfile
     command: npm start
     user: root
     ports:
       - "8072:8072"
+      - "8092:8092"
     environment:
       - SERVICE_PROVIDER_INDEX=2
       - PORT_SMS_2=8072
       - PORT_EMAIL_2=8092
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8072/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    volumes:
+      - ./apps/providers:/app
     networks:
       - twillow-network
 
   # SMS Provider 3 (TypeScript service)
   provider3:
+    platform: linux/arm64
     build:
-      context: .
-      dockerfile: Dockerfile.nodejs
+      context: ./apps/providers
+      dockerfile: Dockerfile
     command: npm start
     user: root
     ports:
       - "8073:8073"
+      - "8093:8093"
     environment:
       - SERVICE_PROVIDER_INDEX=3
       - PORT_SMS_3=8073
       - PORT_EMAIL_3=8093
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8073/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    volumes:
+      - ./apps/providers:/app
     networks:
       - twillow-network
 
   # TaskIQ worker service (can have multiple instances)
   worker:
-    build: .
+    platform: linux/arm64
+    build:
+      context: ./apps/gateway
+      dockerfile: Dockerfile
     command: uv run python -m taskiq worker src.taskiq_scheduler:broker src.tasks --log-level INFO
     environment:
       - REDIS_URL=redis://redis:6379
@@ -116,19 +142,22 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - .:/app
-      - sqlite_data:/app/data
+      - ./apps/gateway:/app
+      - gateway_data:/app/data
     networks:
       - twillow-network
     deploy:
       mode: replicated
-      replicas: 2  # Run 2 worker instances for better throughput
+      replicas: 2
       restart_policy:
         condition: on-failure
 
   # TaskIQ scheduler service (only one instance should run)
   scheduler:
-    build: .
+    platform: linux/arm64
+    build:
+      context: ./apps/gateway
+      dockerfile: Dockerfile
     command: uv run python -m taskiq scheduler src.taskiq_scheduler:scheduler src.tasks --log-level INFO
     environment:
       - REDIS_URL=redis://redis:6379
@@ -138,37 +167,19 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - .:/app
-      - sqlite_data:/app/data
+      - ./apps/gateway:/app
+      - gateway_data:/app/data
     networks:
       - twillow-network
     deploy:
       mode: replicated
-      replicas: 1  # Ensure only one scheduler instance
+      replicas: 1
       restart_policy:
         condition: on-failure
-    
-
-  # Test service for running all tests
-  # tests:
-  #   build: .
-  #   command: uv run pytest tests/ --log-level DEBUG --disable-warnings
-  #   environment:
-  #     - REDIS_URL=redis://redis:6379
-  #     - DATABASE_URL=sqlite:///./data/sms_gateway.db
-  #     - TASKIQ_BROKER_URL=redis://redis:6379
-  #   depends_on:
-  #     redis:
-  #       condition: service_healthy
-  #   volumes:
-  #     - .:/app
-  #     - sqlite_data:/app/data
-  #   networks:
-  #     - twillow-network
 
 volumes:
   redis_data:
-  sqlite_data:
+  gateway_data:
 
 networks:
   twillow-network:
